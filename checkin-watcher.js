@@ -415,6 +415,12 @@ export default {
         .stat-card .stat-value.stat-orange { color: #faad14; }
         .stat-card .stat-value.stat-red { color: #ff4d4f; }
         @media (max-width: 768px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        /* 批量选择 */
+        .task-item .task-checkbox { width: 18px; height: 18px; cursor: pointer; accent-color: #1890ff; flex-shrink: 0; }
+        .task-item.task-selected { border-color: #1890ff; background-color: #f0f8ff; box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15); }
+        .task-item.task-selected.overdue { border-color: #ff4d4f; }
+        .batch-bar { display: flex; align-items: center; justify-content: center; gap: 12px; background: #fff; border: 1px solid #1890ff; border-radius: 10px; padding: 8px 14px; box-shadow: 0 2px 8px rgba(24,144,255,0.12); }
+        .batch-bar #batchCount { font-size: 0.9rem; color: #1890ff; font-weight: 500; }
         /* 任务进度条 */
         .task-progress-wrap { grid-column: 1 / -1; }
         .task-progress { display: flex; align-items: center; gap: 10px; }
@@ -574,6 +580,10 @@ export default {
         <h2 class="page-title"><img src="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}" style="height:1.6rem;vertical-align:middle;margin-right:8px;" alt=""> 签到监控看板</h2>
         <div class="stats-grid" id="statsGrid"></div>
         <div id="tasksList" class="task-list">加载中...</div>
+        <div id="batchBar" class="batch-bar" style="display:none; margin-top: 12px;">
+            <span id="batchCount">已选 0 项</span>
+            <button id="batchCheckinBtn" class="btn btn-action-primary" onclick="batchCheckIn()">✅ 批量签到</button>
+        </div>
     </div>
 
     <div class="card" id="addCard">
@@ -753,6 +763,8 @@ export default {
     var tasks = [];
     var timerInterval = null;
     var authToken = localStorage.getItem('authToken') || null;
+    var selectedTasks = new Set();
+    var isBatchChecking = false;
 
     function isTokenExpired() {
         var expiry = localStorage.getItem('authTokenExpiry');
@@ -819,6 +831,13 @@ export default {
             loginBtn.onclick = showLogin;
             var existingLogout = document.getElementById('logoutBtn');
             if (existingLogout) existingLogout.remove();
+            // 登出时清理批量选中状态
+            selectedTasks.clear();
+            isBatchChecking = false;
+            var batchBar = document.getElementById('batchBar');
+            var batchBtn = document.getElementById('batchCheckinBtn');
+            if (batchBar) batchBar.style.display = 'none';
+            if (batchBtn) { batchBtn.disabled = false; batchBtn.textContent = '✅ 批量签到'; }
             var header = document.getElementById('addSectionHeader');
             header.classList.add('locked');
             header.style.cursor = 'not-allowed';
@@ -981,6 +1000,7 @@ export default {
             var html = '<div class="task-item ' + (isImportant ? 'important' : '') + '" id="task-' + task.id + '">';
             
             html += '<div class="task-left" title="' + task.name + '">';
+            html += '<input type="checkbox" class="task-checkbox" onchange="toggleTaskSelection(\\'' + task.id + '\\')" ' + (selectedTasks.has(task.id) ? 'checked' : '') + '>';
             if (isImportant) html += '<span class="important-badge">⭐</span>';
             html += '<span>' + task.name + '</span>';
             if (checkedToday) html += '<span class="checked-badge">✓ 已签到</span>';
@@ -1273,6 +1293,72 @@ export default {
             setTimeout(loadTasks, 300);
         } else {
             alert('签到失败，请稍后重试');
+        }
+    }
+
+    function toggleTaskSelection(id) {
+        if (isBatchChecking) return;
+        if (selectedTasks.has(id)) {
+            selectedTasks.delete(id);
+        } else {
+            selectedTasks.add(id);
+        }
+        var itemEl = document.getElementById('task-' + id);
+        if (itemEl) itemEl.classList.toggle('task-selected');
+        updateBatchBar();
+    }
+
+    function updateBatchBar() {
+        var bar = document.getElementById('batchBar');
+        var countEl = document.getElementById('batchCount');
+        if (!bar) return;
+        if (selectedTasks.size > 0) {
+            bar.style.display = 'flex';
+            countEl.textContent = '已选 ' + selectedTasks.size + ' 项';
+        } else {
+            bar.style.display = 'none';
+        }
+    }
+
+    async function batchCheckIn() {
+        if (isBatchChecking || selectedTasks.size === 0) return;
+        isBatchChecking = true;
+        var ids = Array.from(selectedTasks);
+        var success = 0;
+        var fail = 0;
+        var btn = document.getElementById('batchCheckinBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '签到中...'; }
+
+        for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            var task = tasks.find(function(t) { return t.id === id; });
+            if (!task) continue;
+            var unit = task.unit || 'hours';
+            var includeToday = task.includeToday || false;
+            var newLastCheckIn = (includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
+            var checkedDate = getTodayDateString();
+            try {
+                var res = await fetch(BASE_URL + '/api/checkin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: id, lastCheckIn: newLastCheckIn, checkedDate: checkedDate })
+                });
+                if (res.ok) { success++; } else { fail++; }
+            } catch (e) { fail++; }
+        }
+
+        selectedTasks.clear();
+        isBatchChecking = false;
+
+        if (success > 0) {
+            confetti({ particleCount: Math.min(60 + success * 10, 200), spread: 70, origin: { y: 0.8 } });
+        }
+
+        await loadTasks();
+        updateBatchBar();
+
+        if (fail > 0) {
+            alert('批量签到完成：成功 ' + success + ' 项，失败 ' + fail + ' 项');
         }
     }
 
