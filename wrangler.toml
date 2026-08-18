@@ -1,0 +1,10 @@
+name = "checkin-watcher"
+main = "checkin-watcher.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "SIGN_IN_KV"
+id = "a2c13e78b260468d9d908f8bf5d2f1c4"
+
+[triggers]
+crons = ["*/30 * * * *"]
