@@ -1091,37 +1091,31 @@ export default {
                 timerEl.innerHTML = timeHtml;
             }
 
-            // 进度条：已过时间 / 完整周期
+            // 进度条：剩余时间占比（刚签到=100%，随时间减少，到期=0%）
             var progEl = document.getElementById('progress-fill-' + task.id);
             var progTextEl = document.getElementById('progress-text-' + task.id);
             if (progEl && progTextEl) {
                 var totalMs = task.countdownHours * 60 * 60 * 1000;
-                var elapsed = (now - task.lastCheckIn) / totalMs;
-                var pct = Math.max(0, Math.min(1, elapsed)) * 100;
-                // 逾期时进度截断 100%
-                if (diff <= 0) pct = 100;
+                var pct = Math.max(0, Math.min(1, diff / totalMs)) * 100;
                 progEl.style.width = Math.round(pct) + '%';
-                var fullCycleMs = task.countdownHours * 60 * 60 * 1000;
-                var roundMs = Math.ceil(now / fullCycleMs) * fullCycleMs;
-                var cycleReached = now >= roundMs && elapsed >= 1;
-                if (cycleReached) {
-                    var targetEl = null;
-                    document.querySelectorAll('#tasksList .task-progress-text').forEach(function(el) {
-                        el.textContent = '✓ 已到期';
-                    });
-                }
+
                 if (diff <= 0) {
                     progEl.classList.add('danger');
                     progEl.classList.remove('warn');
                     progTextEl.textContent = '已超时';
-                } else if (diff <= 86400000) {
+                } else if (pct <= 25) {
+                    progEl.classList.add('danger');
+                    progEl.classList.remove('warn');
+                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(diff / 3600000)) + ' 小时';
+                } else if (pct <= 50) {
                     progEl.classList.add('warn');
                     progEl.classList.remove('danger');
                     progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(diff / 3600000)) + ' 小时';
                 } else {
                     progEl.classList.remove('warn', 'danger');
                     var daysLeft = Math.floor(diff / 86400000);
-                    progTextEl.textContent = '剩余 ' + daysLeft + ' 天 ' + Math.floor((diff % 86400000) / 3600000) + ' 小时';
+                    var hoursLeft = Math.floor((diff % 86400000) / 3600000);
+                    progTextEl.textContent = (daysLeft > 0 ? daysLeft + ' 天 ' + hoursLeft + ' 小时' : hoursLeft + ' 小时');
                 }
             }
         });
