@@ -1216,7 +1216,7 @@ export default {
         if (startDateStr && startTimeStr) {
             lastCheckIn = new Date(startDateStr + 'T' + startTimeStr).getTime();
         } else {
-            lastCheckIn = (includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
+            lastCheckIn = Date.now();
         }
 
         var res = await authFetch(BASE_URL + '/api/add', {
