@@ -403,11 +403,11 @@ export default {
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}">
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px 20px 60px 20px; color: #333; }
-        .layout-container { display: flex; flex-direction: column; gap: 30px; max-width: 900px; margin: 0 auto; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px 20px 40px 20px; color: #333; }
+        .layout-container { display: flex; flex-direction: column; gap: 24px; max-width: 920px; margin: 0 auto; }
         /* 统计面板 */
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
-        .stat-card { background: #fff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 6px; }
+        .stat-card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
         .stat-card .stat-label { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
         .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: #2c3e50; font-variant-numeric: tabular-nums; }
         .stat-card .stat-value.stat-blue { color: #1890ff; }
@@ -427,7 +427,7 @@ export default {
         .footer { text-align: center; padding: 20px; font-size: 0.8rem; color: #aaa; border-top: 1px solid #eee; }
         .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
         h2 { margin-top: 0; font-size: 1.4rem; color: #1a1a1a; margin-bottom: 20px; font-weight: 600; }
-        .page-title { text-align: center; font-size: 1.8rem; margin-bottom: 30px; color: #2c3e50; }
+        .page-title { text-align: center; font-size: 1.8rem; margin-bottom: 18px; color: #2c3e50; }
         .page-title img { height: 1.6rem; vertical-align: middle; margin-right: 8px; }
         
         .add-form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; align-items: flex-end; }
@@ -452,14 +452,15 @@ export default {
         .task-list { display: flex; flex-direction: column; gap: 15px; }
         
         /* 桌面端：三列网格 */
-        .task-item { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; background: #fff; border: 1px solid #eee; padding: 18px 25px; border-radius: 12px; transition: box-shadow 0.2s; }
+        .task-item { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto; align-items: center; gap: 6px 0; background: #fff; border: 1px solid #eee; padding: 16px 25px; border-radius: 12px; transition: box-shadow 0.2s; }
         .task-item:hover { box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
         .task-item.important { border-color: #faad14; background-color: #fffbe6; box-shadow: 0 2px 8px rgba(250, 173, 20, 0.15); }
         .task-item.overdue { border-color: #ff4d4f; background-color: #fff2f0; box-shadow: none; }
-        
-        .task-left { justify-self: start; font-weight: 600; font-size: 1.15rem; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: flex; align-items: center; gap: 8px; }
-        .task-center { justify-self: center; text-align: center; }
-        .task-right { justify-self: end; display: flex; gap: 8px; align-items: center; }
+
+        .task-left { grid-row: 1; justify-self: start; font-weight: 600; font-size: 1.15rem; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: flex; align-items: center; gap: 8px; }
+        .task-center { grid-row: 1; justify-self: center; text-align: center; }
+        .task-right { grid-row: 1; justify-self: end; display: flex; gap: 8px; align-items: center; }
+        .task-progress-wrap { grid-column: 1 / -1; grid-row: 2; padding-top: 2px; }
         .countdown-display { font-size: 1.6rem; font-weight: 700; color: #52c41a; font-variant-numeric: tabular-nums; }
         .countdown-display.overdue { color: #ff4d4f; }
         .unit { font-size: 0.9rem; font-weight: 400; margin: 0 4px 0 2px; color: #888; }
@@ -534,14 +535,20 @@ export default {
                 justify-content: center;   /* 按钮组居中 */
                 width: 100%; 
             }
-            .text-actions { 
-                margin-left: 0; 
-                padding-left: 0; 
-                border-left: none; 
+            .text-actions {
+                margin-left: 0;
+                padding-left: 0;
+                border-left: none;
             }
-            .btn { 
-                font-size: 0.8rem; 
-                padding: 6px 10px; 
+            .task-progress-wrap {
+                grid-column: auto;
+                grid-row: auto;
+                width: 100%;
+                order: 4;
+            }
+            .btn {
+                font-size: 0.8rem;
+                padding: 6px 10px;
             }
             .btn-primary { 
                 height: 38px; 
@@ -980,7 +987,6 @@ export default {
             html += '</div>';
 
             html += '<div class="task-center"><div class="countdown-display" id="countdown-' + task.id + '">--:--:--</div></div>';
-	            html += '<div class="task-progress-wrap"><div class="task-progress" id="progress-' + task.id + '"><div class="task-progress-bar"><div class="task-progress-fill" id="progress-fill-' + task.id + '"></div></div><span class="task-progress-text" id="progress-text-' + task.id + '"></span></div></div>';
             html += '<div class="task-right">';
             
             if (task.targetUrl && task.targetUrl.trim() !== '') {
@@ -995,7 +1001,9 @@ export default {
                 html += '<button class="btn-text delete" onclick="deleteTask(\\'' + task.id + '\\')">删除</button>';
                 html += '</div>';
             }
-            html += '</div></div>';
+            html += '</div>';
+            html += '<div class="task-progress-wrap"><div class="task-progress" id="progress-' + task.id + '"><div class="task-progress-bar"><div class="task-progress-fill" id="progress-fill-' + task.id + '"></div></div><span class="task-progress-text" id="progress-text-' + task.id + '"></span></div></div>';
+            html += '</div>';
             
             container.insertAdjacentHTML('beforeend', html);
         });
