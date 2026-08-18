@@ -1043,8 +1043,11 @@ export default {
             var diff = deadline - now;
             var timerEl = document.getElementById('countdown-' + task.id);
             var itemEl = document.getElementById('task-' + task.id);
-            
+
             if (!timerEl || !itemEl) return;
+
+            // 进度条用的截止时间，随 includeToday 逻辑同步调整
+            var progDeadline = deadline;
 
             if (task.unit !== 'hours') {
                 if (task.includeToday) {
@@ -1060,6 +1063,7 @@ export default {
                         var midnight = new Date(checkinDate.getFullYear(), checkinDate.getMonth(), checkinDate.getDate() + 1, 0, 0, 0, 0).getTime();
                         var falseDeadline = midnight + task.countdownHours * 60 * 60 * 1000;
                         diff = Math.max(diff, falseDeadline - now);
+                        progDeadline = falseDeadline;
                     }
                 }
             }
@@ -1096,7 +1100,7 @@ export default {
             var progTextEl = document.getElementById('progress-text-' + task.id);
             if (progEl && progTextEl) {
                 var totalMs = task.countdownHours * 60 * 60 * 1000;
-                var rawDiff = deadline - now; // 用原始 deadline 计算，不经过 includeToday 修正
+                var rawDiff = progDeadline - now; // 用 progDeadline 计算，与倒计时逻辑一致
                 var pct = Math.max(0, Math.min(1, rawDiff / totalMs)) * 100;
                 progEl.style.width = Math.round(pct) + '%';
 
