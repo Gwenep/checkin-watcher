@@ -1096,25 +1096,26 @@ export default {
             var progTextEl = document.getElementById('progress-text-' + task.id);
             if (progEl && progTextEl) {
                 var totalMs = task.countdownHours * 60 * 60 * 1000;
-                var pct = Math.max(0, Math.min(1, diff / totalMs)) * 100;
+                var rawDiff = deadline - now; // 用原始 deadline 计算，不经过 includeToday 修正
+                var pct = Math.max(0, Math.min(1, rawDiff / totalMs)) * 100;
                 progEl.style.width = Math.round(pct) + '%';
 
-                if (diff <= 0) {
+                if (rawDiff <= 0) {
                     progEl.classList.add('danger');
                     progEl.classList.remove('warn');
                     progTextEl.textContent = '已超时';
-                } else if (pct <= 25) {
+                } else if (pct <= 20) {
                     progEl.classList.add('danger');
                     progEl.classList.remove('warn');
-                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(diff / 3600000)) + ' 小时';
+                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(rawDiff / 3600000)) + ' 小时';
                 } else if (pct <= 50) {
                     progEl.classList.add('warn');
                     progEl.classList.remove('danger');
-                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(diff / 3600000)) + ' 小时';
+                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(rawDiff / 3600000)) + ' 小时';
                 } else {
                     progEl.classList.remove('warn', 'danger');
-                    var daysLeft = Math.floor(diff / 86400000);
-                    var hoursLeft = Math.floor((diff % 86400000) / 3600000);
+                    var daysLeft = Math.floor(rawDiff / 86400000);
+                    var hoursLeft = Math.floor((rawDiff % 86400000) / 3600000);
                     progTextEl.textContent = (daysLeft > 0 ? daysLeft + ' 天 ' + hoursLeft + ' 小时' : hoursLeft + ' 小时');
                 }
             }
