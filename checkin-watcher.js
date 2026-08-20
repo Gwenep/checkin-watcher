@@ -425,9 +425,7 @@ export default {
         .task-progress-wrap { grid-column: 1 / -1; }
         .task-progress { display: flex; align-items: center; gap: 10px; }
         .task-progress-bar { flex: 1; height: 6px; background: #f0f0f0; border-radius: 3px; overflow: hidden; }
-        .task-progress-fill { height: 100%; border-radius: 3px; background: #52c41a; transition: width 0.3s ease; }
-        .task-progress-fill.warn { background: #faad14; }
-        .task-progress-fill.danger { background: #ff4d4f; }
+        .task-progress-fill { height: 100%; border-radius: 3px; background: #52c41a; transition: width 0.3s ease, background-color 0.3s ease; }
         .task-progress-text { font-size: 0.75rem; color: #999; white-space: nowrap; }
         /* 底部系统信息栏 */
         .footer { text-align: center; padding: 20px; font-size: 0.8rem; color: #aaa; border-top: 1px solid #eee; }
@@ -1127,22 +1125,16 @@ export default {
                 progEl.style.width = Math.round(pct) + '%';
 
                 if (rawDiff <= 0) {
-                    progEl.classList.add('danger');
-                    progEl.classList.remove('warn');
+                    progEl.style.backgroundColor = '#ff4d4f';
                     progTextEl.textContent = '已超时';
-                } else if (pct <= 20) {
-                    progEl.classList.add('danger');
-                    progEl.classList.remove('warn');
-                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(rawDiff / 3600000)) + ' 小时';
-                } else if (pct <= 50) {
-                    progEl.classList.add('warn');
-                    progEl.classList.remove('danger');
-                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(rawDiff / 3600000)) + ' 小时';
                 } else {
-                    progEl.classList.remove('warn', 'danger');
-                    var daysLeft = Math.floor(rawDiff / 86400000);
-                    var hoursLeft = Math.floor((rawDiff % 86400000) / 3600000);
-                    progTextEl.textContent = (daysLeft > 0 ? daysLeft + ' 天 ' + hoursLeft + ' 小时' : hoursLeft + ' 小时');
+                    // 平滑渐变：剩余 100% = 绿色 #52c41a，0% = 红色 #ff4d4f
+                    var t = pct / 100;
+                    var r = Math.round(82 + 173 * (1 - t));
+                    var g = Math.round(196 - 119 * (1 - t));
+                    var b = Math.round(26 + 53 * (1 - t));
+                    progEl.style.backgroundColor = 'rgb(' + r + ',' + g + ',' + b + ')';
+                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(rawDiff / 3600000)) + ' 小时';
                 }
             }
         });
