@@ -453,6 +453,7 @@ export default {
         .text-actions { display: flex; gap: 4px; margin-left: 10px; padding-left: 14px; border-left: 1px solid #e8e8e8; }
         .btn-text { background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 6px 8px; color: #999; transition: color 0.2s; }
         .btn-text.edit:hover { color: #1890ff; }
+        .btn-text.copy:hover { color: #52c41a; }
         .btn-text.delete:hover { color: #ff4d4f; }
         
         .task-list { display: flex; flex-direction: column; gap: 15px; }
@@ -579,11 +580,11 @@ export default {
     <div class="main-content">
         <h2 class="page-title"><img src="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}" style="height:1.6rem;vertical-align:middle;margin-right:8px;" alt=""> 签到监控看板</h2>
         <div class="stats-grid" id="statsGrid"></div>
-        <div id="tasksList" class="task-list">加载中...</div>
-        <div id="batchBar" class="batch-bar" style="display:none; margin-top: 12px;">
+        <div id="batchBar" class="batch-bar" style="display:none; margin-bottom: 12px;">
             <span id="batchCount">已选 0 项</span>
             <button id="batchCheckinBtn" class="btn btn-action-primary" onclick="batchCheckIn()">✅ 批量签到</button>
         </div>
+        <div id="tasksList" class="task-list">加载中...</div>
     </div>
 
     <div class="card" id="addCard">
@@ -1018,6 +1019,7 @@ export default {
             if (authToken) {
                 html += '<div class="text-actions">';
                 html += '<button class="btn-text edit" onclick="openEditModal(\\'' + task.id + '\\')">编辑</button>';
+                html += '<button class="btn-text copy" onclick="copyTask(\\'' + task.id + '\\')">复制</button>';
                 html += '<button class="btn-text delete" onclick="deleteTask(\\'' + task.id + '\\')">删除</button>';
                 html += '</div>';
             }
@@ -1289,7 +1291,7 @@ export default {
         });
         
         if (res.ok) {
-            confetti({ particleCount: 60, spread: 70, origin: { y: 0.8 } });
+            fireConfetti(60);
             setTimeout(loadTasks, 300);
         } else {
             alert('签到失败，请稍后重试');
@@ -1320,6 +1322,14 @@ export default {
         }
     }
 
+    function fireConfetti(particleCount) {
+        try {
+            if (typeof confetti === 'function') {
+                confetti({ particleCount: particleCount, spread: 70, origin: { y: 0.8 } });
+            }
+        } catch (e) {}
+    }
+
     async function batchCheckIn() {
         if (isBatchChecking || selectedTasks.size === 0) return;
         isBatchChecking = true;
@@ -1329,29 +1339,32 @@ export default {
         var btn = document.getElementById('batchCheckinBtn');
         if (btn) { btn.disabled = true; btn.textContent = '签到中...'; }
 
-        for (var i = 0; i < ids.length; i++) {
-            var id = ids[i];
-            var task = tasks.find(function(t) { return t.id === id; });
-            if (!task) continue;
-            var unit = task.unit || 'hours';
-            var includeToday = task.includeToday || false;
-            var newLastCheckIn = (includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
-            var checkedDate = getTodayDateString();
-            try {
-                var res = await fetch(BASE_URL + '/api/checkin', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: id, lastCheckIn: newLastCheckIn, checkedDate: checkedDate })
-                });
-                if (res.ok) { success++; } else { fail++; }
-            } catch (e) { fail++; }
+        try {
+            for (var i = 0; i < ids.length; i++) {
+                var id = ids[i];
+                var task = tasks.find(function(t) { return t.id === id; });
+                if (!task) continue;
+                var unit = task.unit || 'hours';
+                var includeToday = task.includeToday || false;
+                var newLastCheckIn = (includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
+                var checkedDate = getTodayDateString();
+                try {
+                    var res = await fetch(BASE_URL + '/api/checkin', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: id, lastCheckIn: newLastCheckIn, checkedDate: checkedDate })
+                    });
+                    if (res.ok) { success++; } else { fail++; }
+                } catch (e) { fail++; }
+            }
+        } finally {
+            selectedTasks.clear();
+            isBatchChecking = false;
+            if (btn) { btn.disabled = false; btn.textContent = '✅ 批量签到'; }
         }
 
-        selectedTasks.clear();
-        isBatchChecking = false;
-
         if (success > 0) {
-            confetti({ particleCount: Math.min(60 + success * 10, 200), spread: 70, origin: { y: 0.8 } });
+            fireConfetti(Math.min(60 + success * 10, 200));
         }
 
         await loadTasks();
@@ -1369,6 +1382,36 @@ export default {
         }
         if(!confirm('确定删除该项吗？')) return;
         var res = await authFetch(BASE_URL + '/api/delete?id=' + id, { method: 'POST' });
+        if (res.ok) {
+            loadTasks();
+        } else if (res.status === 401) {
+            alert('登录已过期，请重新登录');
+            doLogout();
+        }
+    }
+
+    async function copyTask(id) {
+        if (!authToken) {
+            alert('请先登录');
+            return;
+        }
+        var task = tasks.find(function(t) { return t.id === id; });
+        if (!task) return;
+
+        var res = await authFetch(BASE_URL + '/api/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: task.name + ' - 副本',
+                targetUrl: task.targetUrl || '',
+                countdownHours: task.countdownHours,
+                priority: task.priority || 0,
+                importance: task.importance || 'normal',
+                unit: task.unit || 'hours',
+                lastCheckIn: task.lastCheckIn,
+                includeToday: task.includeToday || false
+            })
+        });
         if (res.ok) {
             loadTasks();
         } else if (res.status === 401) {
