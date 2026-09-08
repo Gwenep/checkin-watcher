@@ -404,7 +404,9 @@ export default {
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px 20px 40px 20px; color: #333; }
-        .layout-container { display: flex; flex-direction: column; gap: 24px; max-width: 920px; margin: 0 auto; }
+        .layout-container { display: flex; flex-direction: column; gap: 24px; max-width: 1400px; margin: 0 auto; }
+        /* 宽屏下三列，窄屏回落两列 */
+        @media (min-width: 1400px) { .task-list { grid-template-columns: repeat(3, 1fr); } }
         /* 统计面板 */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 6px; }
         .stat-card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
@@ -419,7 +421,7 @@ export default {
         .task-item .task-checkbox { width: 18px; height: 18px; cursor: pointer; accent-color: #1890ff; flex-shrink: 0; }
         .task-item.task-selected { border-color: #1890ff; background-color: #f0f8ff; box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15); }
         .task-item.task-selected.overdue { border-color: #ff4d4f; }
-        .batch-bar { display: flex; align-items: center; justify-content: center; gap: 12px; background: #fff; border: 1px solid #1890ff; border-radius: 10px; padding: 8px 14px; box-shadow: 0 2px 8px rgba(24,144,255,0.12); }
+        .batch-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; background: #fff; border: 1px solid #1890ff; border-radius: 10px; padding: 8px 14px; box-shadow: 0 2px 8px rgba(24,144,255,0.12); }
         .batch-bar #batchCount { font-size: 0.9rem; color: #1890ff; font-weight: 500; }
         /* 任务进度条 */
         .task-progress-wrap { grid-column: 1 / -1; }
@@ -445,18 +447,19 @@ export default {
         .btn { box-sizing: border-box; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; white-space: nowrap; }
         .btn:hover { opacity: 0.85; }
         .btn-primary { background-color: #1890ff; color: white; width: 100%; height: 42px; font-size: 1rem; font-weight: 500; display: flex; align-items: center; justify-content: center; padding: 0 24px; }
-        .btn-action-primary { background-color: #52c41a; color: white; font-weight: 500; border: 1px solid transparent; } 
-        .btn-action-secondary { background-color: #f0f5ff; color: #1890ff; border: 1px solid #adc6ff; font-weight: 500; } 
+        .btn-action-primary { background-color: #52c41a; color: white; font-weight: 500; border: 1px solid transparent; padding: 6px 10px; }
+        .btn-action-secondary { background-color: #f0f5ff; color: #1890ff; border: 1px solid #adc6ff; font-weight: 500; padding: 6px 10px; }
         
-        .text-actions { display: flex; gap: 4px; margin-left: 10px; padding-left: 14px; border-left: 1px solid #e8e8e8; }
-        .btn-text { background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 6px 8px; color: #999; transition: color 0.2s; }
+        .text-actions { display: flex; gap: 0; margin-left: 4px; padding-left: 8px; border-left: 1px solid #e8e8e8; }
+        .btn-text { background: none; border: none; cursor: pointer; font-size: 0.8rem; padding: 4px 4px; color: #999; transition: color 0.2s; white-space: nowrap; }
         .btn-text.edit:hover { color: #1890ff; }
         .btn-text.copy:hover { color: #52c41a; }
         .btn-text.delete:hover { color: #ff4d4f; }
         
-        .task-list { display: flex; flex-direction: column; gap: 15px; }
-        
-        /* 桌面端：三列网格 */
+        .task-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
+        @media (max-width: 768px) { .task-list { grid-template-columns: 1fr; } }
+
+        /* 桌面端：卡片内两列布局 */
         .task-item { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto; align-items: center; gap: 6px 0; background: #fff; border: 1px solid #eee; padding: 16px 25px; border-radius: 12px; transition: box-shadow 0.2s; }
         .task-item:hover { box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
         .task-item.important { border-color: #faad14; background-color: #fffbe6; box-shadow: 0 2px 8px rgba(250, 173, 20, 0.15); }
@@ -578,9 +581,11 @@ export default {
     <div class="main-content">
         <h2 class="page-title"><img src="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}" style="height:1.6rem;vertical-align:middle;margin-right:8px;" alt=""> 签到监控看板</h2>
         <div class="stats-grid" id="statsGrid"></div>
-        <div id="batchBar" class="batch-bar" style="display:none; margin-bottom: 12px;">
+        <div id="batchBar" class="batch-bar" style="margin-bottom: 12px;">
             <span id="batchCount">已选 0 项</span>
             <button id="batchCheckinBtn" class="btn btn-action-primary" onclick="batchCheckIn()">✅ 批量签到</button>
+            <button id="batchDeleteBtn" class="btn" style="background:#fff1f0; color:#ff4d4f; border:1px solid #ffa39e;" onclick="batchDelete()">🗑 删除所选</button>
+            <button class="btn" style="background:#f0f5ff; color:#1890ff; border:1px solid #adc6ff;" onclick="selectDueSoon()">⏰ 勾选24小时内</button>
         </div>
         <div id="tasksList" class="task-list">加载中...</div>
     </div>
@@ -833,10 +838,9 @@ export default {
             // 登出时清理批量选中状态
             selectedTasks.clear();
             isBatchChecking = false;
-            var batchBar = document.getElementById('batchBar');
             var batchBtn = document.getElementById('batchCheckinBtn');
-            if (batchBar) batchBar.style.display = 'none';
             if (batchBtn) { batchBtn.disabled = false; batchBtn.textContent = '✅ 批量签到'; }
+            updateBatchBar();
             var header = document.getElementById('addSectionHeader');
             header.classList.add('locked');
             header.style.cursor = 'not-allowed';
@@ -984,7 +988,7 @@ export default {
     function renderTasks() {
         var container = document.getElementById('tasksList');
         if (tasks.length === 0) {
-            container.innerHTML = '<div style="text-align:center; padding: 40px; color:#888; background:#fff; border-radius:12px;">暂无签到项，请在下方添加。</div>';
+            container.innerHTML = '<div style="text-align:center; padding: 40px; color:#888; background:#fff; border-radius:12px; grid-column: 1 / -1;">暂无签到项，请在下方添加。</div>';
             return;
         }
         
@@ -1292,26 +1296,19 @@ export default {
 
     function toggleTaskSelection(id) {
         if (isBatchChecking) return;
-        if (selectedTasks.has(id)) {
-            selectedTasks.delete(id);
-        } else {
-            selectedTasks.add(id);
-        }
-        var itemEl = document.getElementById('task-' + id);
-        if (itemEl) itemEl.classList.toggle('task-selected');
+        setTaskSelection(id, !selectedTasks.has(id));
         updateBatchBar();
     }
 
     function updateBatchBar() {
-        var bar = document.getElementById('batchBar');
         var countEl = document.getElementById('batchCount');
-        if (!bar) return;
-        if (selectedTasks.size > 0) {
-            bar.style.display = 'flex';
-            countEl.textContent = '已选 ' + selectedTasks.size + ' 项';
-        } else {
-            bar.style.display = 'none';
-        }
+        if (!countEl) return;
+        countEl.textContent = '已选 ' + selectedTasks.size + ' 项';
+        var checkinBtn = document.getElementById('batchCheckinBtn');
+        var deleteBtn = document.getElementById('batchDeleteBtn');
+        var has = selectedTasks.size > 0;
+        if (checkinBtn) checkinBtn.disabled = !has || isBatchChecking;
+        if (deleteBtn) deleteBtn.disabled = !has || isBatchChecking;
     }
 
     function fireConfetti(particleCount) {
@@ -1320,6 +1317,61 @@ export default {
                 confetti({ particleCount: particleCount, spread: 70, origin: { y: 0.8 } });
             }
         } catch (e) {}
+    }
+
+    function setTaskSelection(id, selected) {
+        if (selected) selectedTasks.add(id); else selectedTasks.delete(id);
+        var itemEl = document.getElementById('task-' + id);
+        if (itemEl) itemEl.classList.toggle('task-selected', selected);
+        var checkbox = itemEl ? itemEl.querySelector('.task-checkbox') : null;
+        if (checkbox) checkbox.checked = selected;
+    }
+
+    function selectDueSoon() {
+        if (isBatchChecking) return;
+        var now = Date.now();
+        tasks.forEach(function(task) {
+            var deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
+            var diff = deadline - now;
+            if (diff > 0 && diff <= 86400000) setTaskSelection(task.id, true);
+        });
+        updateBatchBar();
+    }
+
+    async function batchDelete() {
+        if (isBatchChecking || selectedTasks.size === 0) return;
+        if (!authToken) {
+            alert('请先登录');
+            return;
+        }
+        if (!confirm('确定删除选中的 ' + selectedTasks.size + ' 项吗？删除后不可恢复！')) return;
+
+        isBatchChecking = true;
+        var ids = Array.from(selectedTasks);
+        var success = 0;
+        var fail = 0;
+        var btn = document.getElementById('batchDeleteBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '删除中...'; }
+
+        try {
+            for (var i = 0; i < ids.length; i++) {
+                try {
+                    var res = await authFetch(BASE_URL + '/api/delete?id=' + encodeURIComponent(ids[i]), { method: 'POST' });
+                    if (res.ok) { success++; } else { fail++; }
+                } catch (e) { fail++; }
+            }
+        } finally {
+            selectedTasks.clear();
+            isBatchChecking = false;
+            if (btn) { btn.disabled = false; btn.textContent = '🗑 删除所选'; }
+        }
+
+        await loadTasks();
+        updateBatchBar();
+
+        if (fail > 0) {
+            alert('批量删除完成：成功 ' + success + ' 项，失败 ' + fail + ' 项');
+        }
     }
 
     async function batchCheckIn() {
