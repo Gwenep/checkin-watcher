@@ -399,110 +399,168 @@ export default {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
     <title>签到监控看板</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}">
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px 20px 40px 20px; color: #333; }
+        :root {
+            color-scheme: light;
+            --primary: #1890ff; --primary-soft: #f0f5ff; --primary-border: #adc6ff;
+            --success: #52c41a; --warning: #faad14; --danger: #ff4d4f;
+            --danger-bg: #fff1f0; --danger-border: #ffa39e;
+            --bg: #f0f2f5; --card-bg: #fff; --text: #333; --text-secondary: #666; --text-muted: #8c8c8c;
+            --border: #eee; --input-bg: #fafafa; --input-border: #ddd; --btn-default-bg: #f0f0f0;
+            --important-bg: #fffbe6; --overdue-bg: #fff2f0; --selected-bg: #f0f8ff;
+            --status-bg: #f9f9f9; --success-bg: #f6ffed; --error-bg: #fff2f0;
+            --skeleton-hi: #f7f8fa; --shadow: 0 2px 10px rgba(0,0,0,0.04);
+            --fill-l: 44%; --fill-ls: 14%;
+        }
+        /* 深色主题：默认跟随系统，点击右上角 🌙 按钮可手动切换（存 localStorage） */
+        :root.dark {
+            color-scheme: dark;
+            --primary: #40a9ff; --primary-soft: rgba(64,169,255,0.12); --primary-border: rgba(64,169,255,0.45);
+            --success: #73d13d; --warning: #ffc53d; --danger: #ff7875;
+            --danger-bg: rgba(255,77,79,0.10); --danger-border: rgba(255,120,120,0.40);
+            --bg: #131417; --card-bg: #1f1f23; --text: #e6e6e6; --text-secondary: #a6a6a6; --text-muted: #8c8c8c;
+            --border: #2e2e33; --input-bg: #26262b; --input-border: #3a3a40; --btn-default-bg: #2a2a2e;
+            --important-bg: rgba(250,173,20,0.08); --overdue-bg: rgba(255,77,79,0.07); --selected-bg: rgba(64,169,255,0.10);
+            --status-bg: #26262a; --success-bg: rgba(115,211,61,0.10); --error-bg: rgba(255,77,79,0.10);
+            --skeleton-hi: #2a2a2e; --shadow: 0 2px 10px rgba(0,0,0,0.25);
+            --fill-l: 50%; --fill-ls: 8%;
+        }
+        @property --t { syntax: '<number>'; inherits: false; initial-value: 1; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg); margin: 0; padding: 20px 20px 40px 20px; color: var(--text); transition: background-color 0.3s, color 0.3s; }
         .layout-container { display: flex; flex-direction: column; gap: 24px; max-width: 1400px; margin: 0 auto; }
         /* 宽屏下三列，窄屏回落两列 */
         @media (min-width: 1400px) { .task-list { grid-template-columns: repeat(3, 1fr); } }
         /* 统计面板 */
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 6px; }
-        .stat-card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
-        .stat-card .stat-label { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
-        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: #2c3e50; font-variant-numeric: tabular-nums; }
-        .stat-card .stat-value.stat-blue { color: #1890ff; }
-        .stat-card .stat-value.stat-green { color: #52c41a; }
-        .stat-card .stat-value.stat-orange { color: #faad14; }
-        .stat-card .stat-value.stat-red { color: #ff4d4f; }
+        .stat-card { background: var(--card-bg); border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow); }
+        .stat-card .stat-label { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+        .stat-card .stat-value.stat-blue { color: var(--primary); }
+        .stat-card .stat-value.stat-green { color: var(--success); }
+        .stat-card .stat-value.stat-orange { color: var(--warning); }
+        .stat-card .stat-value.stat-red { color: var(--danger); }
         @media (max-width: 768px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
         /* 批量选择 */
-        .task-item .task-checkbox { width: 18px; height: 18px; cursor: pointer; accent-color: #1890ff; flex-shrink: 0; }
-        .task-item.task-selected { border-color: #1890ff; background-color: #f0f8ff; box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15); }
-        .task-item.task-selected.overdue { border-color: #ff4d4f; }
-        .batch-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; background: #fff; border: 1px solid #1890ff; border-radius: 10px; padding: 8px 14px; box-shadow: 0 2px 8px rgba(24,144,255,0.12); }
-        .batch-bar #batchCount { font-size: 0.9rem; color: #1890ff; font-weight: 500; }
+        .task-item .task-checkbox { width: 18px; height: 18px; cursor: pointer; accent-color: var(--primary); flex-shrink: 0; }
+        .task-item.task-selected { border-color: var(--primary); background-color: var(--selected-bg); box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15); }
+        .task-item.task-selected.overdue { border-color: var(--danger); }
+        .batch-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; background: var(--card-bg); border: 1px solid var(--primary); border-radius: 10px; padding: 8px 14px; box-shadow: 0 2px 8px rgba(24,144,255,0.12); }
+        .batch-bar #batchCount { font-size: 0.9rem; color: var(--primary); font-weight: 500; }
         /* 任务进度条 */
         .task-progress-wrap { grid-column: 1 / -1; }
         .task-progress { display: flex; align-items: center; gap: 10px; }
-        .task-progress-bar { flex: 1; height: 6px; background: #f0f0f0; border-radius: 3px; overflow: hidden; }
-        .task-progress-fill { height: 100%; border-radius: 3px; background: #52c41a; transition: width 0.3s ease, background-color 0.3s ease; }
-        .task-progress-text { font-size: 0.75rem; color: #999; white-space: nowrap; }
+        .task-progress-bar { flex: 1; height: 6px; background: var(--input-bg); border-radius: 3px; overflow: hidden; }
+        .task-progress-fill { height: 100%; border-radius: 3px; background: hsl(calc(83 * var(--t, 1)), 75%, calc(var(--fill-l) + var(--fill-ls) * (1 - var(--t, 1)))); transition: width 0.3s ease, --t 0.3s linear; }
+        .task-progress-text { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+        .task-progress-text.overdue { color: var(--danger); }
         /* 底部系统信息栏 */
-        .footer { text-align: center; padding: 20px; font-size: 0.8rem; color: #aaa; border-top: 1px solid #eee; }
-        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
-        h2 { margin-top: 0; font-size: 1.4rem; color: #1a1a1a; margin-bottom: 20px; font-weight: 600; }
-        .page-title { text-align: center; font-size: 1.8rem; margin-bottom: 18px; color: #2c3e50; }
+        .footer { text-align: center; padding: 20px; font-size: 0.8rem; color: var(--text-muted); border-top: 1px solid var(--border); }
+        .card { background: var(--card-bg); padding: 25px; border-radius: 12px; box-shadow: var(--shadow); }
+        h2 { margin-top: 0; font-size: 1.4rem; color: var(--text); margin-bottom: 20px; font-weight: 600; }
+        .page-title { text-align: center; font-size: 1.8rem; margin-bottom: 18px; color: var(--text); }
         .page-title img { height: 1.6rem; vertical-align: middle; margin-right: 8px; }
-        
+
         .add-form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; align-items: flex-end; }
         @media (max-width: 768px) { .add-form-grid { grid-template-columns: 1fr; } }
-        
-        .form-group label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: #666; }
-        .form-group input, .form-group select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; background: #fafafa; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: #3498db; }
+
+        .form-group label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: var(--text-secondary); }
+        .form-group input, .form-group select { width: 100%; padding: 10px; border: 1px solid var(--input-border); border-radius: 8px; box-sizing: border-box; background: var(--input-bg); color: var(--text); }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
         .input-row { display: flex; gap: 10px; }
-        
+
         .btn { box-sizing: border-box; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; white-space: nowrap; }
         .btn:hover { opacity: 0.85; }
-        .btn-primary { background-color: #1890ff; color: white; width: 100%; height: 42px; font-size: 1rem; font-weight: 500; display: flex; align-items: center; justify-content: center; padding: 0 24px; }
-        .btn-action-primary { background-color: #52c41a; color: white; font-weight: 500; border: 1px solid transparent; padding: 6px 10px; }
-        .btn-action-secondary { background-color: #f0f5ff; color: #1890ff; border: 1px solid #adc6ff; font-weight: 500; padding: 6px 10px; }
-        
-        .text-actions { display: flex; gap: 0; margin-left: 4px; padding-left: 8px; border-left: 1px solid #e8e8e8; }
-        .btn-text { background: none; border: none; cursor: pointer; font-size: 0.8rem; padding: 4px 4px; color: #999; transition: color 0.2s; white-space: nowrap; }
-        .btn-text.edit:hover { color: #1890ff; }
-        .btn-text.copy:hover { color: #52c41a; }
-        .btn-text.delete:hover { color: #ff4d4f; }
-        
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background-color: var(--primary); color: #fff; width: 100%; height: 42px; font-size: 1rem; font-weight: 500; display: flex; align-items: center; justify-content: center; padding: 0 24px; }
+        .btn-action-primary { background-color: var(--success); color: #fff; font-weight: 500; border: 1px solid transparent; padding: 6px 10px; }
+        .btn-action-secondary { background-color: var(--primary-soft); color: var(--primary); border: 1px solid var(--primary-border); font-weight: 500; padding: 6px 10px; }
+        .btn-action-primary:disabled { background-color: var(--success); }
+        .btn.modal-cancel { background: var(--btn-default-bg); color: var(--text); width: 100%; height: 42px; }
+
+        .text-actions { display: flex; gap: 0; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--border); }
+        .btn-text { background: none; border: none; cursor: pointer; font-size: 0.8rem; padding: 4px 4px; color: var(--text-muted); transition: color 0.2s; white-space: nowrap; }
+        .btn-text.edit:hover { color: var(--primary); }
+        .btn-text.copy:hover { color: var(--success); }
+        .btn-text.delete:hover { color: var(--danger); }
+
         .task-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
         @media (max-width: 768px) { .task-list { grid-template-columns: 1fr; } }
 
-        /* 桌面端：卡片内两列布局 */
-        .task-item { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto; align-items: center; gap: 6px 0; background: #fff; border: 1px solid #eee; padding: 16px 25px; border-radius: 12px; transition: box-shadow 0.2s; }
-        .task-item:hover { box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
-        .task-item.important { border-color: #faad14; background-color: #fffbe6; box-shadow: 0 2px 8px rgba(250, 173, 20, 0.15); }
-        .task-item.overdue { border-color: #ff4d4f; background-color: #fff2f0; box-shadow: none; }
+        /* 骨架屏 */
+        .skeleton-card { background: var(--card-bg); border: 1px solid var(--border); padding: 16px 25px; border-radius: 12px; }
+        .sk-line { height: 14px; border-radius: 7px; background: linear-gradient(90deg, var(--input-bg) 25%, var(--skeleton-hi) 50%, var(--input-bg) 75%); background-size: 200% 100%; animation: sk-shimmer 1.2s infinite; }
+        .sk-line.title { width: 35%; height: 18px; }
+        .sk-line.big { width: 25%; height: 26px; margin: 10px auto; }
+        .sk-line.bar { width: 100%; height: 8px; margin-top: 14px; }
+        @keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-        .task-left { grid-row: 1; justify-self: start; font-weight: 600; font-size: 1.15rem; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: flex; align-items: center; gap: 8px; }
+        /* 桌面端：卡片内两列布局 */
+        .task-item { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto; align-items: center; gap: 6px 0; background: var(--card-bg); border: 1px solid var(--border); padding: 16px 25px; border-radius: 12px; transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s; }
+        .task-item:hover { box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
+        .task-item.important { border-color: var(--warning); background-color: var(--important-bg); box-shadow: 0 2px 8px rgba(250, 173, 20, 0.15); }
+        .task-item.overdue { border-color: var(--danger); background-color: var(--overdue-bg); box-shadow: none; }
+
+        .task-left { grid-row: 1; justify-self: start; font-weight: 600; font-size: 1.15rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: flex; align-items: center; gap: 8px; }
         .task-center { grid-row: 1; justify-self: center; text-align: center; }
         .task-right { grid-row: 1; justify-self: end; display: flex; gap: 8px; align-items: center; }
         .task-progress-wrap { grid-column: 1 / -1; grid-row: 2; padding-top: 2px; }
-        .countdown-display { font-size: 1.6rem; font-weight: 700; color: #52c41a; font-variant-numeric: tabular-nums; }
-        .countdown-display.overdue { color: #ff4d4f; }
-        .unit { font-size: 0.9rem; font-weight: 400; margin: 0 4px 0 2px; color: #888; }
-        
-        .important-badge { color: #faad14; font-size: 1rem; }
-        .checked-badge { background: #52c41a; color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
-        
+        .countdown-display { font-size: 1.6rem; font-weight: 700; color: var(--success); font-variant-numeric: tabular-nums; }
+        .countdown-display.overdue { color: var(--danger); }
+        .countdown-display.due-soon { color: var(--danger); }
+        .countdown-display.fresh { color: var(--success); }
+        .unit { font-size: 0.9rem; font-weight: 400; margin: 0 4px 0 2px; color: var(--text-muted); }
+        /* 长倒计时排版：天数为主、时分秒弱化 */
+        .countdown-display .days { font-size: 1.2em; }
+        .countdown-display .unit { font-size: 0.85rem; }
+
+        .important-badge { color: var(--warning); font-size: 1rem; }
+        .checked-badge { background: var(--success); color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; }
-        .modal-content { background: white; padding: 25px; border-radius: 12px; width: 400px; max-width: 90%; }
+        .modal-overlay.visible { display: flex; animation: fadeIn 0.2s ease; }
+        .modal-content { background: var(--card-bg); color: var(--text); padding: 25px; border-radius: 12px; width: 400px; max-width: 90%; box-shadow: 0 8px 30px rgba(0,0,0,0.2); animation: popIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes popIn { from { opacity: 0; transform: scale(0.92) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
         .modal-content .form-group { margin-bottom: 15px; }
-        
+
+        /* toast 通知 */
+        #toastWrap { position: fixed; right: 16px; bottom: 16px; z-index: 2000; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+        .toast { background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 8px; padding: 12px 18px; font-size: 0.9rem; box-shadow: 0 6px 20px rgba(0,0,0,0.18); animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); max-width: 320px; }
+        .toast.success { border-left-color: var(--success); }
+        .toast.error { border-left-color: var(--danger); }
+        .toast.hide { animation: toastOut 0.3s ease forwards; }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(40px); } }
+
         .collapse-header { cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }
-        .collapse-header:hover { color: #1890ff; }
-        .collapse-header.locked { cursor: not-allowed; color: #999; }
+        .collapse-header:hover { color: var(--primary); }
+        .collapse-header.locked { cursor: not-allowed; color: var(--text-muted); }
         .collapse-arrow { font-size: 1.2rem; transition: transform 0.2s; display: inline-block; }
         .collapse-arrow.open { transform: rotate(90deg); }
         .collapse-body { overflow: hidden; transition: max-height 0.3s ease; }
-        
-        .top-bar { display: flex; justify-content: flex-end; align-items: center; margin-bottom: 10px; }
-        .login-btn { background: #1890ff; color: white; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; border: none; }
-        .login-btn.logged-in { background: #52c41a; }
-        .logout-btn { background: #ff4d4f; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; border: none; margin-left: 8px; }
+
+        .top-bar { display: flex; justify-content: flex-end; align-items: center; margin-bottom: 10px; gap: 8px; }
+        .theme-toggle { background: var(--btn-default-bg); border: 1px solid var(--border); color: var(--text); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; font-size: 1rem; line-height: 1; transition: background-color 0.2s; }
+        .theme-toggle:hover { background: var(--primary-soft); }
+        .login-btn { background: var(--primary); color: white; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; border: none; }
+        .login-btn.logged-in { background: var(--success); }
+        .logout-btn { background: var(--danger); color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; border: none; margin-left: 8px; }
 
         /* 邮件通知设置样式 */
         .trigger-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .trigger-row input { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa; }
-        .trigger-row input:focus { outline: none; border-color: #3498db; }
-        .trigger-row .btn-remove { background: none; border: none; color: #ff4d4f; cursor: pointer; font-size: 1.2rem; padding: 4px 8px; }
+        .trigger-row input { flex: 1; padding: 8px; border: 1px solid var(--input-border); border-radius: 6px; background: var(--input-bg); color: var(--text); }
+        .trigger-row input:focus { outline: none; border-color: var(--primary); }
+        .trigger-row .btn-remove { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 1.2rem; padding: 4px 8px; }
         .trigger-row .btn-remove:hover { opacity: 0.7; }
-        .btn-add-trigger { background: none; border: 1px dashed #1890ff; color: #1890ff; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
-        .btn-add-trigger:hover { background: #f0f5ff; }
-        .email-status { font-size: 0.85rem; color: #999; padding: 8px 12px; background: #f9f9f9; border-radius: 6px; margin-top: 5px; }
-        .email-status.success { color: #52c41a; background: #f6ffed; }
-        .email-status.error { color: #ff4d4f; background: #fff2f0; }
+        .btn-add-trigger { background: none; border: 1px dashed var(--primary); color: var(--primary); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+        .btn-add-trigger:hover { background: var(--primary-soft); }
+        .email-status { font-size: 0.85rem; color: var(--text-muted); padding: 8px 12px; background: var(--status-bg); border-radius: 6px; margin-top: 5px; }
+        .email-status.success { color: var(--success); background: var(--success-bg); }
+        .email-status.error { color: var(--danger); background: var(--error-bg); }
         .inline-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
         .inline-group label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.9rem; }
         .inline-group input[type="radio"] { width: 16px; height: 16px; cursor: pointer; }
@@ -574,6 +632,7 @@ export default {
 <body>
 
 <div class="top-bar" id="topBar">
+    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换深浅色">🌙</button>
     <button class="login-btn" id="loginBtn" onclick="showLogin()">🔐 登录</button>
 </div>
 
@@ -584,10 +643,11 @@ export default {
         <div id="batchBar" class="batch-bar" style="margin-bottom: 12px;">
             <span id="batchCount">已选 0 项</span>
             <button id="batchCheckinBtn" class="btn btn-action-primary" onclick="batchCheckIn()">✅ 批量签到</button>
-            <button id="batchDeleteBtn" class="btn" style="background:#fff1f0; color:#ff4d4f; border:1px solid #ffa39e;" onclick="batchDelete()">🗑 删除所选</button>
-            <button class="btn" style="background:#f0f5ff; color:#1890ff; border:1px solid #adc6ff;" onclick="selectDueSoon()">⏰ 勾选24小时内</button>
+            <button id="batchDeleteBtn" class="btn" style="background:var(--danger-bg); color:var(--danger); border:1px solid var(--danger-border);" onclick="batchDelete()">🗑 删除所选</button>
+            <button id="dueSoonBtn" class="btn" style="background:var(--primary-soft); color:var(--primary); border:1px solid var(--primary-border);" onclick="selectDueSoon()">⏰ 选中即将到期</button>
+            <button id="clearSelBtn" class="btn" style="background:var(--btn-default-bg); color:var(--text-secondary);" onclick="clearSelection()">清空选择</button>
         </div>
-        <div id="tasksList" class="task-list">加载中...</div>
+        <div id="tasksList" class="task-list"></div>
     </div>
 
     <div class="card" id="addCard">
@@ -690,6 +750,7 @@ export default {
 </div>
 </div>
 <div class="footer" id="footerBar">Checkin Watcher v1.0 · 载入中...</div>
+<div id="toastWrap"></div>
 <!-- 登录弹窗 -->
 <div id="loginModal" class="modal-overlay">
     <div class="modal-content">
@@ -699,10 +760,10 @@ export default {
             <input type="password" id="loginPassword" placeholder="请输入管理员密码">
         </div>
         <div style="display: flex; gap: 10px; margin-top: 10px;">
-            <button class="btn btn-primary" onclick="doLogin()">登录</button>
-            <button class="btn" style="background:#f0f0f0; width:100%; color:#333; height:42px;" onclick="closeLoginModal()">取消</button>
+            <button class="btn btn-primary" id="loginSubmitBtn" onclick="doLogin()">登录</button>
+            <button class="btn modal-cancel" onclick="closeLoginModal()">取消</button>
         </div>
-        <p id="loginError" style="color: red; font-size: 0.9rem; display: none;"></p>
+        <p id="loginError" style="color: var(--danger); font-size: 0.9rem; display: none;"></p>
     </div>
 </div>
 
@@ -756,8 +817,8 @@ export default {
             </label>
         </div>
         <div style="display: flex; gap: 10px; margin-top: 10px;">
-            <button class="btn btn-primary" onclick="saveEdit()">保存</button>
-            <button class="btn" style="background:#f0f0f0; width:100%; color:#333; height:42px;" onclick="closeEditModal()">取消</button>
+            <button class="btn btn-primary" id="editSubmitBtn" onclick="saveEdit()">保存</button>
+            <button class="btn modal-cancel" onclick="closeEditModal()">取消</button>
         </div>
     </div>
 </div>
@@ -769,6 +830,63 @@ export default {
     var authToken = localStorage.getItem('authToken') || null;
     var selectedTasks = new Set();
     var isBatchChecking = false;
+
+    // ===== 主题切换 =====
+    function applyTheme(theme) {
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+        var btn = document.getElementById('themeToggle');
+        if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+    }
+
+    function toggleTheme() {
+        var isDark = document.documentElement.classList.contains('dark');
+        var next = isDark ? 'light' : 'dark';
+        localStorage.setItem('theme', next);
+        applyTheme(next);
+    }
+
+    (function initTheme() {
+        var saved = localStorage.getItem('theme');
+        var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(saved || (sysDark ? 'dark' : 'light'));
+    })();
+
+    // ===== toast 通知 =====
+    function showToast(msg, type) {
+        var wrap = document.getElementById('toastWrap');
+        if (!wrap) return;
+        var el = document.createElement('div');
+        el.className = 'toast' + (type ? ' ' + type : '');
+        el.textContent = msg;
+        wrap.appendChild(el);
+        setTimeout(function() {
+            el.classList.add('hide');
+            setTimeout(function() { el.remove(); }, 300);
+        }, 3000);
+    }
+
+    // ===== 样式化确认框 =====
+    function confirmBox(msg) {
+        return new Promise(function(resolve) {
+            var overlay = document.createElement('div');
+            overlay.className = 'modal-overlay visible';
+            overlay.style.zIndex = '1500';
+            var content = document.createElement('div');
+            content.className = 'modal-content';
+            content.style.width = '320px';
+            content.innerHTML = '<p style="margin: 0 0 18px; font-size: 0.95rem; line-height: 1.6;">' + msg + '</p>' +
+                '<div style="display: flex; gap: 10px;">' +
+                '<button class="btn btn-primary" id="cfmOk" style="background: var(--danger); height: 38px;">确定</button>' +
+                '<button class="btn modal-cancel" id="cfmCancel" style="height: 38px;">取消</button></div>';
+            overlay.appendChild(content);
+            document.body.appendChild(overlay);
+            var done = function(val) { overlay.remove(); resolve(val); };
+            content.querySelector('#cfmOk').onclick = function() { done(true); };
+            content.querySelector('#cfmCancel').onclick = function() { done(false); };
+            overlay.onclick = function(e) { if (e.target === overlay) done(false); };
+            content.querySelector('#cfmOk').focus();
+        });
+    }
 
     function isTokenExpired() {
         var expiry = localStorage.getItem('authTokenExpiry');
@@ -860,14 +978,46 @@ export default {
         loadTasks();
     }
 
+    function showModal(id, focusId) {
+        var modal = document.getElementById(id);
+        modal.classList.add('visible');
+        if (focusId) {
+            var el = document.getElementById(focusId);
+            if (el) setTimeout(function() { el.focus(); }, 50);
+        }
+    }
+
+    function hideModal(id) {
+        document.getElementById(id).classList.remove('visible');
+    }
+
+    // Esc 关闭最上层弹窗
+    document.addEventListener('keydown', function(e) {
+        if (e.key !== 'Escape') return;
+        var login = document.getElementById('loginModal');
+        var edit = document.getElementById('editModal');
+        if (edit.classList.contains('visible')) { hideModal('editModal'); return; }
+        if (login.classList.contains('visible')) { hideModal('loginModal'); return; }
+    });
+
+    // 弹窗内 Enter 提交
+    document.getElementById('loginPassword').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') doLogin();
+    });
+    ['editName', 'editUrl', 'editPriority'].forEach(function(id) {
+        document.getElementById(id).addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') saveEdit();
+        });
+    });
+
     function showLogin() {
-        document.getElementById('loginModal').style.display = 'flex';
+        showModal('loginModal', 'loginPassword');
         document.getElementById('loginPassword').value = '';
         document.getElementById('loginError').style.display = 'none';
     }
 
     function closeLoginModal() {
-        document.getElementById('loginModal').style.display = 'none';
+        hideModal('loginModal');
     }
 
     async function doLogin() {
@@ -939,8 +1089,22 @@ export default {
             renderTasks();
             startGlobalTimer();
         } catch (e) {
-            document.getElementById('tasksList').innerText = "加载失败，请检查网络";
+            renderTasksFailed();
         }
+    }
+
+    function renderTasksFailed() {
+        var container = document.getElementById('tasksList');
+        container.innerHTML = '<div style="text-align:center; padding: 40px; color:var(--danger); background:var(--card-bg); border-radius:12px; grid-column: 1 / -1;">⚠️ 加载失败，请检查网络</div>';
+    }
+
+    function renderSkeleton() {
+        var container = document.getElementById('tasksList');
+        var html = '';
+        for (var i = 0; i < 4; i++) {
+            html += '<div class="skeleton-card"><div class="sk-line title"></div><div class="sk-line big"></div><div class="sk-line bar"></div></div>';
+        }
+        container.innerHTML = html;
     }
 
     function sortTasks() {
@@ -988,12 +1152,15 @@ export default {
     function renderTasks() {
         var container = document.getElementById('tasksList');
         if (tasks.length === 0) {
-            container.innerHTML = '<div style="text-align:center; padding: 40px; color:#888; background:#fff; border-radius:12px; grid-column: 1 / -1;">暂无签到项，请在下方添加。</div>';
+            container.innerHTML = '<div style="text-align:center; padding: 50px 20px; color:var(--text-muted); background:var(--card-bg); border-radius:12px; grid-column: 1 / -1; box-shadow: var(--shadow);">' +
+                '<div style="font-size: 2.5rem; margin-bottom: 10px;">📋</div>' +
+                '<div style="font-size: 1rem;">暂无签到项</div>' +
+                '<div style="font-size: 0.85rem; margin-top: 6px;">登录后添加第一个签到任务吧</div></div>';
             return;
         }
-        
+
         sortTasks();
-        
+
         var todayStr = getTodayDateString();
         container.innerHTML = '';
         tasks.forEach(function(task) {
@@ -1096,16 +1263,20 @@ export default {
                 timerEl.innerHTML = "⚠️ 已超时";
                 timerEl.classList.add('overdue');
                 itemEl.classList.add('overdue');
-                timerEl.style.color = ''; // 恢复CSS中的红色
             } else {
                 timerEl.classList.remove('overdue');
                 itemEl.classList.remove('overdue');
-                
-                // 24小时内（86400000毫秒）显示红色
-                if (diff <= 86400000) {
-                    timerEl.style.color = '#ff4d4f';
+
+                // 剩余超过一个完整周期：刚签完到，绿色；否则按 24 小时阈值变色
+                if (diff >= task.countdownHours * 60 * 60 * 1000) {
+                    timerEl.classList.add('fresh');
+                    timerEl.classList.remove('due-soon');
+                } else if (diff <= 86400000) {
+                    timerEl.classList.add('due-soon');
+                    timerEl.classList.remove('fresh');
                 } else {
-                    timerEl.style.color = '#52c41a';
+                    timerEl.classList.remove('fresh');
+                    timerEl.classList.remove('due-soon');
                 }
                 
                 var days = Math.floor(diff / (1000 * 60 * 60 * 24));
@@ -1114,7 +1285,7 @@ export default {
                 var secs = String(Math.floor((diff % (1000 * 60)) / 1000)).padStart(2, '0');
                 
                 var timeHtml = "";
-                if (days > 0) timeHtml += days + '<span class="unit">天</span>';
+                if (days > 0) timeHtml += '<span class="days">' + days + '</span><span class="unit">天</span>';
                 timeHtml += hrs + '<span class="unit">时</span>' + mins + '<span class="unit">分</span>' + secs + '<span class="unit">秒</span>';
                 timerEl.innerHTML = timeHtml;
             }
@@ -1129,16 +1300,19 @@ export default {
                 progEl.style.width = Math.round(pct) + '%';
 
                 if (rawDiff <= 0) {
-                    progEl.style.backgroundColor = '#ff4d4f';
+                    progEl.style.setProperty('--t', 0);
+                    progEl.classList.add('overdue');
+                    progTextEl.classList.add('overdue');
                     progTextEl.textContent = '已超时';
                 } else {
-                    // 平滑渐变：剩余 100% = 绿色 #52c41a，0% = 红色 #ff4d4f
-                    var t = pct / 100;
-                    var r = Math.round(82 + 173 * (1 - t));
-                    var g = Math.round(196 - 119 * (1 - t));
-                    var b = Math.round(26 + 53 * (1 - t));
-                    progEl.style.backgroundColor = 'rgb(' + r + ',' + g + ',' + b + ')';
-                    progTextEl.textContent = '剩余 ' + Math.max(1, Math.ceil(rawDiff / 3600000)) + ' 小时';
+                    progEl.classList.remove('overdue');
+                    progTextEl.classList.remove('overdue');
+                    // 平滑渐变：剩余 100% = 绿，0% = 红（--t 1→0，颜色由 CSS 计算）
+                    progEl.style.setProperty('--t', (pct / 100).toFixed(3));
+                    var deadlineDate = new Date(progDeadline);
+                    var pad = function(n) { return String(n).padStart(2, '0'); };
+                    var deadlineStr = pad(deadlineDate.getMonth() + 1) + '-' + pad(deadlineDate.getDate()) + ' ' + pad(deadlineDate.getHours()) + ':' + pad(deadlineDate.getMinutes());
+                    progTextEl.textContent = '截止 ' + deadlineStr;
                 }
             }
         });
@@ -1175,7 +1349,7 @@ export default {
         
         header.addEventListener('click', function() {
             if (!authToken) {
-                alert('请先登录管理员账号');
+                showToast('请先登录管理员账号', 'error');
                 return;
             }
             isOpen = !isOpen;
@@ -1197,7 +1371,7 @@ export default {
 
         header.addEventListener('click', function() {
             if (!authToken) {
-                alert('请先登录管理员账号');
+                showToast('请先登录管理员账号', 'error');
                 return;
             }
             isOpen = !isOpen;
@@ -1216,7 +1390,7 @@ export default {
 
     async function addTask() {
         if (!authToken) {
-            alert('请先登录');
+            showToast('请先登录', 'error');
             return;
         }
         var name = document.getElementById('addName').value.trim();
@@ -1227,7 +1401,7 @@ export default {
         var importance = document.getElementById('addImportance').value;
         var includeToday = document.getElementById('addIncludeToday').checked;
 
-        if (!name) return alert('请填写名称');
+        if (!name) return showToast('请填写名称', 'error');
         
         var countdownHours = timeValue * timeUnit;
         var unit = (timeUnit === 1) ? 'hours' : ((timeUnit === 24) ? 'days' : 'months');
@@ -1262,7 +1436,7 @@ export default {
             document.getElementById('addStartTime').value = '';
             loadTasks();
         } else if (res.status === 401) {
-            alert('登录已过期，请重新登录');
+            showToast('登录已过期，请重新登录', 'error');
             doLogout();
         }
     }
@@ -1290,7 +1464,7 @@ export default {
             fireConfetti(60);
             setTimeout(loadTasks, 300);
         } else {
-            alert('签到失败，请稍后重试');
+            showToast('签到失败，请稍后重试', 'error');
         }
     }
 
@@ -1331,20 +1505,39 @@ export default {
         if (isBatchChecking) return;
         var now = Date.now();
         tasks.forEach(function(task) {
+            // 与倒计时显示一致的截止时间（含 includeToday 调整逻辑）
             var deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
             var diff = deadline - now;
+            if (task.unit !== 'hours') {
+                if (task.includeToday) {
+                    diff = Math.min(diff, task.countdownHours * 60 * 60 * 1000);
+                } else {
+                    var checkinDate = new Date(task.lastCheckIn);
+                    var isMidnight = checkinDate.getHours() === 0 && checkinDate.getMinutes() === 0;
+                    if (!isMidnight && diff > 0) {
+                        var midnight = new Date(checkinDate.getFullYear(), checkinDate.getMonth(), checkinDate.getDate() + 1, 0, 0, 0, 0).getTime();
+                        diff = Math.max(diff, midnight + task.countdownHours * 60 * 60 * 1000 - now);
+                    }
+                }
+            }
             if (diff > 0 && diff <= 86400000) setTaskSelection(task.id, true);
         });
+        updateBatchBar();
+    }
+
+    function clearSelection() {
+        if (isBatchChecking) return;
+        tasks.forEach(function(task) { setTaskSelection(task.id, false); });
         updateBatchBar();
     }
 
     async function batchDelete() {
         if (isBatchChecking || selectedTasks.size === 0) return;
         if (!authToken) {
-            alert('请先登录');
+            showToast('请先登录', 'error');
             return;
         }
-        if (!confirm('确定删除选中的 ' + selectedTasks.size + ' 项吗？删除后不可恢复！')) return;
+        if (!(await confirmBox('确定删除选中的 ' + selectedTasks.size + ' 项吗？删除后不可恢复！'))) return;
 
         isBatchChecking = true;
         var ids = Array.from(selectedTasks);
@@ -1370,7 +1563,7 @@ export default {
         updateBatchBar();
 
         if (fail > 0) {
-            alert('批量删除完成：成功 ' + success + ' 项，失败 ' + fail + ' 项');
+            showToast('批量删除完成：成功 ' + success + ' 项，失败 ' + fail + ' 项', 'error');
         }
     }
 
@@ -1415,28 +1608,28 @@ export default {
         updateBatchBar();
 
         if (fail > 0) {
-            alert('批量签到完成：成功 ' + success + ' 项，失败 ' + fail + ' 项');
+            showToast('批量签到完成：成功 ' + success + ' 项，失败 ' + fail + ' 项', 'error');
         }
     }
 
     async function deleteTask(id) {
         if (!authToken) {
-            alert('请先登录');
+            showToast('请先登录', 'error');
             return;
         }
-        if(!confirm('确定删除该项吗？')) return;
+        if (!(await confirmBox('确定删除该项吗？'))) return;
         var res = await authFetch(BASE_URL + '/api/delete?id=' + id, { method: 'POST' });
         if (res.ok) {
             loadTasks();
         } else if (res.status === 401) {
-            alert('登录已过期，请重新登录');
+            showToast('登录已过期，请重新登录', 'error');
             doLogout();
         }
     }
 
     async function copyTask(id) {
         if (!authToken) {
-            alert('请先登录');
+            showToast('请先登录', 'error');
             return;
         }
         var task = tasks.find(function(t) { return t.id === id; });
@@ -1459,13 +1652,12 @@ export default {
         if (res.ok) {
             loadTasks();
         } else if (res.status === 401) {
-            alert('登录已过期，请重新登录');
+            showToast('登录已过期，请重新登录', 'error');
             doLogout();
         }
     }
 
-    function openEditModal(id) {
-        if (!authToken) return;
+    function openEditModal(id) {        if (!authToken) return;
         var task = tasks.find(function(t) { return t.id === id; });
         if(!task) return;
         
@@ -1494,11 +1686,11 @@ export default {
             document.getElementById('editTimeUnit').value = "1";
         }
 
-        document.getElementById('editModal').style.display = 'flex';
+        document.getElementById('editModal').classList.add('visible');
     }
 
     function closeEditModal() {
-        document.getElementById('editModal').style.display = 'none';
+        hideModal('editModal');
     }
 
     async function saveEdit() {
@@ -1514,8 +1706,8 @@ export default {
         var startDateStr = document.getElementById('editStartDate').value;
         var startTimeStr = document.getElementById('editStartTime').value;
 
-        if (!name) return alert('名称不能为空');
-        if (!startDateStr || !startTimeStr) return alert('请选择开始时间');
+        if (!name) return showToast('名称不能为空', 'error');
+        if (!startDateStr || !startTimeStr) return showToast('请选择开始时间', 'error');
         
         var countdownHours = timeValue * timeUnit;
         var unit = (timeUnit === 1) ? 'hours' : ((timeUnit === 24) ? 'days' : 'months');
@@ -1548,7 +1740,7 @@ export default {
             closeEditModal();
             loadTasks();
         } else if (res.status === 401) {
-            alert('登录已过期，请重新登录');
+            showToast('登录已过期，请重新登录', 'error');
             doLogout();
         }
     }
@@ -1615,7 +1807,7 @@ export default {
     }
 
     async function saveEmailSettings() {
-        if (!authToken) { alert('请先登录'); return; }
+        if (!authToken) { showToast('请先登录', 'error'); return; }
         var recipientsStr = document.getElementById('emailRecipients').value.trim();
         var recipients = recipientsStr.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
         if (recipients.length === 0) {
@@ -1648,7 +1840,7 @@ export default {
     }
 
     async function testEmail() {
-        if (!authToken) { alert('请先登录'); return; }
+        if (!authToken) { showToast('请先登录', 'error'); return; }
         document.getElementById('emailStatus').textContent = '⏳ 正在发送测试邮件...';
         document.getElementById('emailStatus').className = 'email-status';
         try {
@@ -1668,6 +1860,7 @@ export default {
     }
 
     (async function() {
+        renderSkeleton();
         await verifyToken();
         updateLoginUI();
         loadTasks();
@@ -1675,7 +1868,7 @@ export default {
 </script>
 </body>
 </html>`;
-      return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
     }
 
     return new Response("Not Found", { status: 404 });
