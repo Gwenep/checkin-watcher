@@ -91,20 +91,20 @@ async function checkAndSendNotifications(env, KV) {
 
     const deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
     const remaining = deadline - now;
+    if (remaining <= 0) continue;
 
-    let closestTrigger = null, closestKey = null, closestTriggerMs = Infinity;
+    // 收集所有已越过（剩余 <= 触发小时数）且未发送过的阈值并全部标记。
+    // 若只标一个，24h 标记一旦丢失（并发覆盖/发送失败），之后会以 12h 阈值补发，
+    // 用户就会在"应该 24h 提醒"时收到"还剩 12 小时"的邮件。
+    const crossedKeys = [];
     for (const trigger of settings.triggers) {
-      const key = `${task.id}_${task.lastCheckIn}_${trigger}`;
-      if (sentNotifications[key]) continue;
-      const triggerMs = trigger * 60 * 60 * 1000;
-      if (remaining > 0 && remaining <= triggerMs && triggerMs < closestTriggerMs) {
-        closestTriggerMs = triggerMs;
-        closestTrigger = trigger;
-        closestKey = key;
+      if (remaining <= trigger * 60 * 60 * 1000) {
+        const key = `${task.id}_${task.lastCheckIn}_${trigger}`;
+        if (!sentNotifications[key]) crossedKeys.push(key);
       }
     }
-    if (closestTrigger) {
-      notificationsToSend.push({ task, remaining, trigger: closestTrigger, key: closestKey });
+    if (crossedKeys.length > 0) {
+      notificationsToSend.push({ task, remaining, keys: crossedKeys });
     }
   }
 
@@ -113,14 +113,17 @@ async function checkAndSendNotifications(env, KV) {
     const html = createEmailHtml(n.task, n.remaining);
     const ok = await sendEmail(env, settings, subject, html);
     if (ok) {
-      sentNotifications[n.key] = now;
+      for (const k of n.keys) sentNotifications[k] = now;
       newSent = true;
     }
   }
 
   if (newSent) {
-    settings.sentNotifications = sentNotifications;
-    await KV.put("email_settings", JSON.stringify(settings));
+    // 合并写入：定时器、页面加载、签到都会触发本检查并发读改写 email_settings，
+    // 整份覆盖会把并发方刚写入的标记冲掉，导致重复或错位发信。
+    const fresh = await getEmailSettings(KV);
+    fresh.sentNotifications = { ...(fresh.sentNotifications || {}), ...sentNotifications };
+    await KV.put("email_settings", JSON.stringify(fresh));
   }
 }
 
@@ -675,13 +678,21 @@ export default {
                 <div class="form-group">
                     <label>倒计时周期</label>
                     <div class="input-row">
-                        <input type="number" id="addTimeValue" value="1" min="1" step="1" style="flex: 1.5;">
+                        <input type="number" id="addTimeValue" value="1" min="0" step="any" placeholder="可留空" style="flex: 1.5;">
                         <select id="addTimeUnit" style="flex: 1;">
                             <option value="1">小时</option>
                             <option value="24" selected>天</option>
                             <option value="720">月</option>
                         </select>
                     </div>
+                </div>
+                <div class="form-group">
+                    <label>截止时间（选填）</label>
+                    <div class="input-row">
+                        <input type="date" id="addDeadlineDate" style="flex: 1.5;">
+                        <input type="time" id="addDeadlineTime" style="flex: 1;">
+                    </div>
+                    <span style="font-size: 0.8rem; color: #999;">填写后自动计算周期，与周期互相联动</span>
                 </div>
                 <div class="form-group" style="margin-bottom: 0;">
                     <label>优先级 (0最低, 100最高)</label>
@@ -697,9 +708,9 @@ export default {
                 <div class="form-group" style="margin-bottom: 0;">
                     <label style="display: flex; align-items: center; gap: 8px;">
                         <input type="checkbox" id="addIncludeToday" style="width: 18px; height: 18px; cursor: pointer;">
-                        <span>包含今天</span>
+                        <span>从起始时间开始</span>
                     </label>
-                    <span style="font-size: 0.8rem; color: #999;">默认否，选是则1天倒计时从签到时间起算</span>
+                    <span style="font-size: 0.8rem; color: #999;">默认从第二天0点开始计算周期，勾选后从起始/签到时刻起算</span>
                 </div>
                 <div class="form-group" style="margin-bottom: 0;">
                     <button class="btn btn-primary" onclick="addTask()">添加</button>
@@ -789,13 +800,21 @@ export default {
         <div class="form-group">
             <label>倒计时周期</label>
             <div class="input-row">
-                <input type="number" id="editTimeValue" min="1" step="1" style="flex: 2;">
+                <input type="number" id="editTimeValue" min="0" step="any" placeholder="可留空" style="flex: 2;">
                 <select id="editTimeUnit" style="flex: 1;">
                     <option value="1">小时</option>
                     <option value="24">天</option>
                     <option value="720">月</option>
                 </select>
             </div>
+        </div>
+        <div class="form-group">
+            <label>截止时间</label>
+            <div class="input-row">
+                <input type="date" id="editDeadlineDate" style="flex: 1.5;">
+                <input type="time" id="editDeadlineTime" style="flex: 1;">
+            </div>
+            <span style="font-size: 0.8rem; color: #999;">填写后自动计算周期，与周期互相联动</span>
         </div>
         <div class="input-row">
             <div class="form-group" style="flex: 1;">
@@ -813,8 +832,9 @@ export default {
         <div class="form-group">
             <label style="display: flex; align-items: center; gap: 8px;">
                 <input type="checkbox" id="editIncludeToday" style="width: 18px; height: 18px; cursor: pointer;">
-                <span>包含今天</span>
+                <span>从起始时间开始</span>
             </label>
+            <span style="font-size: 0.8rem; color: #999;">默认从第二天0点开始计算周期，勾选后从起始/签到时刻起算</span>
         </div>
         <div style="display: flex; gap: 10px; margin-top: 10px;">
             <button class="btn btn-primary" id="editSubmitBtn" onclick="saveEdit()">保存</button>
@@ -1237,28 +1257,6 @@ export default {
 
             if (!timerEl || !itemEl) return;
 
-            // 进度条用的截止时间，随 includeToday 逻辑同步调整
-            var progDeadline = deadline;
-
-            if (task.unit !== 'hours') {
-                if (task.includeToday) {
-                    // 包含今天：倒计时从签到时间起算，剩余不超过完整周期
-                    diff = Math.min(diff, task.countdownHours * 60 * 60 * 1000);
-                } else {
-                    // 不包含今天：检查起始时间是否在午夜（false签到时设为午夜）
-                    var checkinDate = new Date(task.lastCheckIn);
-                    var isMidnight = checkinDate.getHours() === 0 && checkinDate.getMinutes() === 0;
-                    if (!isMidnight && diff > 0) {
-                        // 起始时间不是午夜（原本是true签到后切到false）
-                        // 用签到当天的午夜+周期作为截止时间
-                        var midnight = new Date(checkinDate.getFullYear(), checkinDate.getMonth(), checkinDate.getDate() + 1, 0, 0, 0, 0).getTime();
-                        var falseDeadline = midnight + task.countdownHours * 60 * 60 * 1000;
-                        diff = Math.max(diff, falseDeadline - now);
-                        progDeadline = falseDeadline;
-                    }
-                }
-            }
-
             if (diff <= 0) {
                 timerEl.innerHTML = "⚠️ 已超时";
                 timerEl.classList.add('overdue');
@@ -1295,7 +1293,7 @@ export default {
             var progTextEl = document.getElementById('progress-text-' + task.id);
             if (progEl && progTextEl) {
                 var totalMs = task.countdownHours * 60 * 60 * 1000;
-                var rawDiff = progDeadline - now; // 用 progDeadline 计算，与倒计时逻辑一致
+                var rawDiff = deadline - now; // 与倒计时同一口径
                 var pct = Math.max(0, Math.min(1, rawDiff / totalMs)) * 100;
                 progEl.style.width = Math.round(pct) + '%';
 
@@ -1309,7 +1307,7 @@ export default {
                     progTextEl.classList.remove('overdue');
                     // 平滑渐变：剩余 100% = 绿，0% = 红（--t 1→0，颜色由 CSS 计算）
                     progEl.style.setProperty('--t', (pct / 100).toFixed(3));
-                    var deadlineDate = new Date(progDeadline);
+                    var deadlineDate = new Date(deadline);
                     var pad = function(n) { return String(n).padStart(2, '0'); };
                     var deadlineStr = pad(deadlineDate.getMonth() + 1) + '-' + pad(deadlineDate.getDate()) + ' ' + pad(deadlineDate.getHours()) + ':' + pad(deadlineDate.getMinutes());
                     progTextEl.textContent = '截止 ' + deadlineStr;
@@ -1339,6 +1337,60 @@ export default {
         var now = new Date();
         var end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
         return end.getTime();
+    }
+
+    function getStartOfDayMs(ms) {
+        var d = new Date(ms);
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+    }
+
+    // ===== 起始时间 / 倒计时周期 / 截止时间 三者联动 =====
+    // 约定：截止时间 = 周期终点。勾选"从起始时间开始"时终点 = 起始 + 周期；
+    // 否则周期按整天/整月计，从起始当天0点起算（截止=当天0点+N天/N月）。
+    function calcDeadlineFromStart(startMs, hours, includeToday) {
+        if (!isFinite(hours) || hours <= 0) return null;
+        if (includeToday) return startMs + hours * 3600000;
+        return getStartOfDayMs(startMs) + hours * 3600000;
+    }
+
+    function pickUnit(hours) {
+        if (hours >= 720 && hours % 720 === 0) return { value: hours / 720, unit: '720' };
+        if (hours >= 24 && hours % 24 === 0) return { value: hours / 24, unit: '24' };
+        return { value: hours, unit: '1' };
+    }
+
+    // 从周期输入读取小时数；周期留空返回 null（由截止时间反推）
+    function readCycleHours(valueElId, unitElId) {
+        var v = parseFloat(document.getElementById(valueElId).value);
+        var u = parseFloat(document.getElementById(unitElId).value);
+        if (isNaN(v) || v <= 0) return null;
+        return v * u;
+    }
+
+    // 从截止时间输入读取时间戳；未填返回 null
+    function readDeadlineMs(dateElId, timeElId) {
+        var dateStr = document.getElementById(dateElId).value;
+        var timeStr = document.getElementById(timeElId).value;
+        if (!dateStr) return null;
+        var t = new Date(dateStr + 'T' + (timeStr || '00:00'));
+        return isNaN(t.getTime()) ? null : t.getTime();
+    }
+
+    function setDeadlineInputs(dateElId, timeElId, ms) {
+        if (ms == null) {
+            document.getElementById(dateElId).value = '';
+            document.getElementById(timeElId).value = '';
+            return;
+        }
+        var d = new Date(ms);
+        document.getElementById(dateElId).value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        document.getElementById(timeElId).value = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
+    function setCycleInputs(valueElId, unitElId, hours) {
+        var p = pickUnit(hours);
+        document.getElementById(valueElId).value = p.value;
+        document.getElementById(unitElId).value = p.unit;
     }
 
     (function() {
@@ -1388,6 +1440,50 @@ export default {
         });
     })();
 
+    // 添加表单联动：改周期 → 重算截止；改截止 → 反推周期
+    (function() {
+        var cycleIds = ['addTimeValue', 'addTimeUnit'];
+        var editing = false;
+        cycleIds.forEach(function(id) {
+            document.getElementById(id).addEventListener('input', function() {
+                if (editing) return;
+                editing = true;
+                var hours = readCycleHours('addTimeValue', 'addTimeUnit');
+                var startMs = readDeadlineMs('addStartDate', 'addStartTime') || Date.now();
+                var includeToday = document.getElementById('addIncludeToday').checked;
+                setDeadlineInputs('addDeadlineDate', 'addDeadlineTime', calcDeadlineFromStart(startMs, hours, includeToday));
+                editing = false;
+            });
+        });
+        ['addDeadlineDate', 'addDeadlineTime'].forEach(function(id) {
+            document.getElementById(id).addEventListener('input', function() {
+                if (editing) return;
+                editing = true;
+                var deadlineMs = readDeadlineMs('addDeadlineDate', 'addDeadlineTime');
+                var startMs = readDeadlineMs('addStartDate', 'addStartTime') || Date.now();
+                var includeToday = document.getElementById('addIncludeToday').checked;
+                if (deadlineMs == null) {
+                    // 清空截止时间时恢复默认周期 1 天
+                    setCycleInputs('addTimeValue', 'addTimeUnit', 24);
+                } else if (deadlineMs > startMs) {
+                    // 截止时间 = 起始当天0点 + 周期（不勾选时按整天计）
+                    var base = includeToday ? startMs : getStartOfDayMs(startMs);
+                    setCycleInputs('addTimeValue', 'addTimeUnit', (deadlineMs - base) / 3600000);
+                }
+                editing = false;
+            });
+        });
+        document.getElementById('addStartDate').addEventListener('input', recalcAddDeadline);
+        document.getElementById('addStartTime').addEventListener('input', recalcAddDeadline);
+        document.getElementById('addIncludeToday').addEventListener('change', recalcAddDeadline);
+        function recalcAddDeadline() {
+            var hours = readCycleHours('addTimeValue', 'addTimeUnit');
+            if (hours == null) return;
+            var startMs = readDeadlineMs('addStartDate', 'addStartTime') || Date.now();
+            setDeadlineInputs('addDeadlineDate', 'addDeadlineTime', calcDeadlineFromStart(startMs, hours, document.getElementById('addIncludeToday').checked));
+        }
+    })();
+
     async function addTask() {
         if (!authToken) {
             showToast('请先登录', 'error');
@@ -1395,22 +1491,37 @@ export default {
         }
         var name = document.getElementById('addName').value.trim();
         var targetUrl = document.getElementById('addUrl').value.trim();
-        var timeValue = parseFloat(document.getElementById('addTimeValue').value);
-        var timeUnit = parseFloat(document.getElementById('addTimeUnit').value);
         var priority = document.getElementById('addPriority').value;
         var importance = document.getElementById('addImportance').value;
         var includeToday = document.getElementById('addIncludeToday').checked;
 
         if (!name) return showToast('请填写名称', 'error');
-        
-        var countdownHours = timeValue * timeUnit;
-        var unit = (timeUnit === 1) ? 'hours' : ((timeUnit === 24) ? 'days' : 'months');
-        
+
+        // 周期与截止时间联动：周期留空时由截止时间反推
+        var countdownHours = readCycleHours('addTimeValue', 'addTimeUnit');
+        var deadlineMs = readDeadlineMs('addDeadlineDate', 'addDeadlineTime');
+        if (countdownHours == null && deadlineMs == null) {
+            countdownHours = 24; // 两者都未填时默认 1 天
+        } else if (countdownHours == null) {
+            var startForCalc = readDeadlineMs('addStartDate', 'addStartTime') || Date.now();
+            var base = includeToday ? startForCalc : getStartOfDayMs(startForCalc);
+            if (deadlineMs <= base) return showToast('截止时间必须晚于起始时间', 'error');
+            countdownHours = (deadlineMs - base) / 3600000;
+        }
+
+        var unit;
+        if (countdownHours % 720 === 0) unit = 'months';
+        else if (countdownHours % 24 === 0) unit = 'days';
+        else unit = 'hours';
+
         var startDateStr = document.getElementById('addStartDate').value;
         var startTimeStr = document.getElementById('addStartTime').value;
         var lastCheckIn;
         if (startDateStr && startTimeStr) {
             lastCheckIn = new Date(startDateStr + 'T' + startTimeStr).getTime();
+        } else if (startDateStr) {
+            // 只填日期不填时间：视为当天 0 点
+            lastCheckIn = new Date(startDateStr + 'T00:00').getTime();
         } else {
             lastCheckIn = Date.now();
         }
@@ -1434,6 +1545,10 @@ export default {
             document.getElementById('addIncludeToday').checked = false;
             document.getElementById('addStartDate').value = '';
             document.getElementById('addStartTime').value = '';
+            document.getElementById('addTimeValue').value = '1';
+            document.getElementById('addTimeUnit').value = '24';
+            document.getElementById('addDeadlineDate').value = '';
+            document.getElementById('addDeadlineTime').value = '';
             loadTasks();
         } else if (res.status === 401) {
             showToast('登录已过期，请重新登录', 'error');
@@ -1447,6 +1562,7 @@ export default {
 
         var unit = task.unit || 'hours';
         var includeToday = task.includeToday || false;
+        // 勾选"从起始时间开始"（或小时级周期）从签到时刻起算；默认从第二天0点起算
         var newLastCheckIn = (includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
         var checkedDate = getTodayDateString();
 
@@ -1505,21 +1621,9 @@ export default {
         if (isBatchChecking) return;
         var now = Date.now();
         tasks.forEach(function(task) {
-            // 与倒计时显示一致的截止时间（含 includeToday 调整逻辑）
+            // 与倒计时显示一致的截止时间口径
             var deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
             var diff = deadline - now;
-            if (task.unit !== 'hours') {
-                if (task.includeToday) {
-                    diff = Math.min(diff, task.countdownHours * 60 * 60 * 1000);
-                } else {
-                    var checkinDate = new Date(task.lastCheckIn);
-                    var isMidnight = checkinDate.getHours() === 0 && checkinDate.getMinutes() === 0;
-                    if (!isMidnight && diff > 0) {
-                        var midnight = new Date(checkinDate.getFullYear(), checkinDate.getMonth(), checkinDate.getDate() + 1, 0, 0, 0, 0).getTime();
-                        diff = Math.max(diff, midnight + task.countdownHours * 60 * 60 * 1000 - now);
-                    }
-                }
-            }
             if (diff > 0 && diff <= 86400000) setTaskSelection(task.id, true);
         });
         updateBatchBar();
@@ -1582,8 +1686,7 @@ export default {
                 var task = tasks.find(function(t) { return t.id === id; });
                 if (!task) continue;
                 var unit = task.unit || 'hours';
-                var includeToday = task.includeToday || false;
-                var newLastCheckIn = (includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
+                var newLastCheckIn = (task.includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
                 var checkedDate = getTodayDateString();
                 try {
                     var res = await fetch(BASE_URL + '/api/checkin', {
@@ -1675,16 +1778,9 @@ export default {
         document.getElementById('editStartTime').value = timeStr;
 
         var hours = task.countdownHours;
-        if (hours % 720 === 0) {
-            document.getElementById('editTimeValue').value = hours / 720;
-            document.getElementById('editTimeUnit').value = "720";
-        } else if (hours % 24 === 0) {
-            document.getElementById('editTimeValue').value = hours / 24;
-            document.getElementById('editTimeUnit').value = "24";
-        } else {
-            document.getElementById('editTimeValue').value = hours;
-            document.getElementById('editTimeUnit').value = "1";
-        }
+        setCycleInputs('editTimeValue', 'editTimeUnit', hours);
+        setDeadlineInputs('editDeadlineDate', 'editDeadlineTime',
+            calcDeadlineFromStart(task.lastCheckIn, hours, task.includeToday || false));
 
         document.getElementById('editModal').classList.add('visible');
     }
@@ -1693,24 +1789,80 @@ export default {
         hideModal('editModal');
     }
 
+    // 编辑弹窗联动：改周期 → 重算截止；改截止 → 反推周期（以弹窗内起始时间为基准）
+    (function() {
+        var editing = false;
+        ['editTimeValue', 'editTimeUnit'].forEach(function(id) {
+            document.getElementById(id).addEventListener('input', function() {
+                if (editing) return;
+                editing = true;
+                var hours = readCycleHours('editTimeValue', 'editTimeUnit');
+                var startMs = readDeadlineMs('editStartDate', 'editStartTime');
+                var includeToday = document.getElementById('editIncludeToday').checked;
+                setDeadlineInputs('editDeadlineDate', 'editDeadlineTime',
+                    hours == null ? null : calcDeadlineFromStart(startMs, hours, includeToday));
+                editing = false;
+            });
+        });
+        ['editDeadlineDate', 'editDeadlineTime'].forEach(function(id) {
+            document.getElementById(id).addEventListener('input', function() {
+                if (editing) return;
+                editing = true;
+                var deadlineMs = readDeadlineMs('editDeadlineDate', 'editDeadlineTime');
+                var startMs = readDeadlineMs('editStartDate', 'editStartTime');
+                var includeToday = document.getElementById('editIncludeToday').checked;
+                if (deadlineMs == null) {
+                    setCycleInputs('editTimeValue', 'editTimeUnit', 24);
+                } else if (deadlineMs > startMs) {
+                    var base = includeToday ? startMs : getStartOfDayMs(startMs);
+                    setCycleInputs('editTimeValue', 'editTimeUnit', (deadlineMs - base) / 3600000);
+                }
+                editing = false;
+            });
+        });
+        ['editStartDate', 'editStartTime', 'editIncludeToday'].forEach(function(id) {
+            document.getElementById(id).addEventListener('input', recalcEditDeadline);
+            document.getElementById(id).addEventListener('change', recalcEditDeadline);
+        });
+        function recalcEditDeadline() {
+            var hours = readCycleHours('editTimeValue', 'editTimeUnit');
+            if (hours == null) return;
+            var startMs = readDeadlineMs('editStartDate', 'editStartTime');
+            setDeadlineInputs('editDeadlineDate', 'editDeadlineTime',
+                calcDeadlineFromStart(startMs, hours, document.getElementById('editIncludeToday').checked));
+        }
+    })();
+
     async function saveEdit() {
         var id = document.getElementById('editId').value;
         var name = document.getElementById('editName').value.trim();
         var targetUrl = document.getElementById('editUrl').value.trim();
-        var timeValue = parseFloat(document.getElementById('editTimeValue').value);
-        var timeUnit = parseFloat(document.getElementById('editTimeUnit').value);
         var priority = document.getElementById('editPriority').value;
         var importance = document.getElementById('editImportance').value;
         var includeToday = document.getElementById('editIncludeToday').checked;
-        
+
         var startDateStr = document.getElementById('editStartDate').value;
         var startTimeStr = document.getElementById('editStartTime').value;
 
         if (!name) return showToast('名称不能为空', 'error');
         if (!startDateStr || !startTimeStr) return showToast('请选择开始时间', 'error');
-        
-        var countdownHours = timeValue * timeUnit;
-        var unit = (timeUnit === 1) ? 'hours' : ((timeUnit === 24) ? 'days' : 'months');
+
+        // 周期与截止时间联动：周期留空时由截止时间反推
+        var countdownHours = readCycleHours('editTimeValue', 'editTimeUnit');
+        var deadlineMs = readDeadlineMs('editDeadlineDate', 'editDeadlineTime');
+        if (countdownHours == null && deadlineMs == null) {
+            return showToast('请填写倒计时周期或截止时间', 'error');
+        } else if (countdownHours == null) {
+            var startForCalc = new Date(startDateStr + 'T' + startTimeStr).getTime();
+            var base = includeToday ? startForCalc : getStartOfDayMs(startForCalc);
+            if (deadlineMs <= base) return showToast('截止时间必须晚于起始时间', 'error');
+            countdownHours = (deadlineMs - base) / 3600000;
+        }
+
+        var unit;
+        if (countdownHours % 720 === 0) unit = 'months';
+        else if (countdownHours % 24 === 0) unit = 'days';
+        else unit = 'hours';
         
         var startDateTime = new Date(startDateStr + 'T' + startTimeStr);
         var newLastCheckIn = startDateTime.getTime();
