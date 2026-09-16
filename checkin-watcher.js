@@ -53,8 +53,16 @@ function formatRemainingTime(ms) {
   return str;
 }
 
+// 截止时间 = 周期起点 + 周期。周期起点 cycleBase 由前端存入（本地时区的"第二天0点"），
+// Worker 在 UTC 时区无法还原用户本地 0 点，所以只读取。
+// 旧数据/勾选任务没有 cycleBase 时回退 lastCheckIn（勾选任务 lastCheckIn 即签到时刻）。
+function taskDeadline(task) {
+  const base = typeof task.cycleBase === 'number' ? task.cycleBase : task.lastCheckIn;
+  return base + task.countdownHours * 60 * 60 * 1000;
+}
+
 function createEmailHtml(task, remainingMs) {
-  const deadline = new Date(task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000));
+  const deadline = new Date(taskDeadline(task));
   const remaining = formatRemainingTime(remainingMs);
   const importanceLabel = task.importance === 'important' ? '⭐ 重要' : '普通';
   return `
@@ -89,7 +97,7 @@ async function checkAndSendNotifications(env, KV) {
   for (const task of tasks) {
     if (settings.sendMode === 'important' && task.importance !== 'important') continue;
 
-    const deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
+    const deadline = taskDeadline(task);
     const remaining = deadline - now;
     if (remaining <= 0) continue;
 
@@ -231,6 +239,7 @@ export default {
         importance: body.importance === 'important' ? 'important' : 'normal',
         unit: body.unit || 'hours',
         lastCheckIn: body.lastCheckIn || Date.now(),
+        cycleBase: typeof body.cycleBase === 'number' ? body.cycleBase : (body.lastCheckIn || Date.now()),
         checkedDate: null,
         includeToday: body.includeToday || false
       };
@@ -263,6 +272,7 @@ export default {
             unit: body.unit || task.unit || 'hours',
             includeToday: body.includeToday || false,
             lastCheckIn: body.lastCheckIn !== undefined ? body.lastCheckIn : task.lastCheckIn,
+            cycleBase: body.cycleBase !== undefined ? body.cycleBase : (body.lastCheckIn !== undefined ? body.lastCheckIn : task.cycleBase),
             checkedDate: body.checkedDate !== undefined ? body.checkedDate : task.checkedDate
           };
         }
@@ -278,8 +288,9 @@ export default {
       const body = await request.json();
       const taskId = body.id;
       const newLastCheckIn = body.lastCheckIn;
+      const newCycleBase = body.cycleBase;
       const checkedDate = body.checkedDate;
-      
+
       if (!taskId) {
         return new Response(JSON.stringify({ success: false, error: "缺少 id" }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       }
@@ -287,9 +298,11 @@ export default {
       let tasks = await getTasks(KV);
       tasks = tasks.map(task => {
         if (task.id === taskId) {
-          return { 
-            ...task, 
-            lastCheckIn: newLastCheckIn || Date.now(),
+          const lc = newLastCheckIn || Date.now();
+          return {
+            ...task,
+            lastCheckIn: lc,
+            cycleBase: typeof newCycleBase === 'number' ? newCycleBase : lc,
             checkedDate: checkedDate || null
           };
         }
@@ -1130,8 +1143,8 @@ export default {
     function sortTasks() {
         var now = Date.now();
         tasks.sort(function(a, b) {
-            var diffA = (a.lastCheckIn + (a.countdownHours * 60 * 60 * 1000)) - now;
-            var diffB = (b.lastCheckIn + (b.countdownHours * 60 * 60 * 1000)) - now;
+            var diffA = taskDeadline(a) - now;
+            var diffB = taskDeadline(b) - now;
             var hoursA = diffA / (1000 * 60 * 60);
             var hoursB = diffB / (1000 * 60 * 60);
             
@@ -1232,7 +1245,7 @@ export default {
 
 	        tasks.forEach(function(task) {
 	            if (task.checkedDate === todayStr) checkedToday++;
-	            var deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
+	            var deadline = taskDeadline(task);
 	            var diff = deadline - now;
 	            if (diff <= 0) overdue++;
 	            else if (diff <= 86400000) dueSoon++;
@@ -1250,7 +1263,7 @@ export default {
 	    function updateCountdowns() {
 	        var now = Date.now();
 	        tasks.forEach(function(task) {
-            var deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
+            var deadline = taskDeadline(task);
             var diff = deadline - now;
             var timerEl = document.getElementById('countdown-' + task.id);
             var itemEl = document.getElementById('task-' + task.id);
@@ -1333,24 +1346,41 @@ export default {
         timerInterval = setInterval(function() { updateCountdowns(); updateStats(); updateFooterServerTime(); }, 1000);
     }
 
-    function getLocalEndOfDay() {
-        var now = new Date();
-        var end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
-        return end.getTime();
-    }
-
     function getStartOfDayMs(ms) {
         var d = new Date(ms);
         return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
     }
 
     // ===== 起始时间 / 倒计时周期 / 截止时间 三者联动 =====
-    // 约定：截止时间 = 周期终点。勾选"从起始时间开始"时终点 = 起始 + 周期；
-    // 否则周期按整天/整月计，从起始当天0点起算（截止=当天0点+N天/N月）。
+    // 周期起点 cycleBase：勾选"从起始时间开始"或周期不足一天 → 起始时刻；
+    // 否则为起始时间的第二天0点（起始本身是0点则不变）。截止时间 = cycleBase + 周期。
+    function cycleBaseMs(startMs, includeToday, hours) {
+        if (includeToday) return startMs;
+        if (!isFinite(hours) || hours < 24) return startMs;
+        if (getStartOfDayMs(startMs) === startMs) return startMs;
+        var d = new Date(startMs);
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0, 0).getTime();
+    }
+
+    // 由截止时间反推周期小时数，与 cycleBaseMs 的取整规则保持自洽：
+    // 未勾选时优先按"第二天0点"为基准反推（要求结果 ≥ 24h），否则按起始时刻为基准
+    function hoursFromDeadline(startMs, deadlineMs, includeToday) {
+        if (includeToday) return deadlineMs > startMs ? (deadlineMs - startMs) / 3600000 : null;
+        var midnight = cycleBaseMs(startMs, false, 24);
+        var h = (deadlineMs - midnight) / 3600000;
+        if (deadlineMs > midnight && h >= 24) return h;
+        return deadlineMs > startMs ? (deadlineMs - startMs) / 3600000 : null;
+    }
+
     function calcDeadlineFromStart(startMs, hours, includeToday) {
         if (!isFinite(hours) || hours <= 0) return null;
-        if (includeToday) return startMs + hours * 3600000;
-        return getStartOfDayMs(startMs) + hours * 3600000;
+        return cycleBaseMs(startMs, includeToday, hours) + hours * 3600000;
+    }
+
+    // 前端倒计时口径，与后端 taskDeadline 一致
+    function taskDeadline(task) {
+        var base = (typeof task.cycleBase === 'number') ? task.cycleBase : task.lastCheckIn;
+        return base + task.countdownHours * 60 * 60 * 1000;
     }
 
     function pickUnit(hours) {
@@ -1466,9 +1496,8 @@ export default {
                     // 清空截止时间时恢复默认周期 1 天
                     setCycleInputs('addTimeValue', 'addTimeUnit', 24);
                 } else if (deadlineMs > startMs) {
-                    // 截止时间 = 起始当天0点 + 周期（不勾选时按整天计）
-                    var base = includeToday ? startMs : getStartOfDayMs(startMs);
-                    setCycleInputs('addTimeValue', 'addTimeUnit', (deadlineMs - base) / 3600000);
+                    var h = hoursFromDeadline(startMs, deadlineMs, includeToday);
+                    if (h != null) setCycleInputs('addTimeValue', 'addTimeUnit', h);
                 }
                 editing = false;
             });
@@ -1500,19 +1529,6 @@ export default {
         // 周期与截止时间联动：周期留空时由截止时间反推
         var countdownHours = readCycleHours('addTimeValue', 'addTimeUnit');
         var deadlineMs = readDeadlineMs('addDeadlineDate', 'addDeadlineTime');
-        if (countdownHours == null && deadlineMs == null) {
-            countdownHours = 24; // 两者都未填时默认 1 天
-        } else if (countdownHours == null) {
-            var startForCalc = readDeadlineMs('addStartDate', 'addStartTime') || Date.now();
-            var base = includeToday ? startForCalc : getStartOfDayMs(startForCalc);
-            if (deadlineMs <= base) return showToast('截止时间必须晚于起始时间', 'error');
-            countdownHours = (deadlineMs - base) / 3600000;
-        }
-
-        var unit;
-        if (countdownHours % 720 === 0) unit = 'months';
-        else if (countdownHours % 24 === 0) unit = 'days';
-        else unit = 'hours';
 
         var startDateStr = document.getElementById('addStartDate').value;
         var startTimeStr = document.getElementById('addStartTime').value;
@@ -1526,14 +1542,28 @@ export default {
             lastCheckIn = Date.now();
         }
 
+        if (countdownHours == null && deadlineMs == null) {
+            countdownHours = 24; // 两者都未填时默认 1 天
+        } else if (countdownHours == null) {
+            countdownHours = hoursFromDeadline(lastCheckIn, deadlineMs, includeToday);
+            if (countdownHours == null) return showToast('截止时间必须晚于起始时间', 'error');
+        }
+        deadlineMs = calcDeadlineFromStart(lastCheckIn, countdownHours, includeToday);
+
+        var unit;
+        if (countdownHours % 720 === 0) unit = 'months';
+        else if (countdownHours % 24 === 0) unit = 'days';
+        else unit = 'hours';
+
         var res = await authFetch(BASE_URL + '/api/add', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                name: name, targetUrl: targetUrl, countdownHours: countdownHours, 
+            body: JSON.stringify({
+                name: name, targetUrl: targetUrl, countdownHours: countdownHours,
                 priority: priority, importance: importance,
                 unit: unit,
                 lastCheckIn: lastCheckIn,
+                cycleBase: cycleBaseMs(lastCheckIn, includeToday, countdownHours),
                 includeToday: includeToday
             })
         });
@@ -1556,23 +1586,24 @@ export default {
         }
     }
 
-    async function doCheckIn(id) {
+    function doCheckIn(id) {
         var task = tasks.find(function(t) { return t.id === id; });
         if (!task) return;
 
-        var unit = task.unit || 'hours';
-        var includeToday = task.includeToday || false;
-        // 勾选"从起始时间开始"（或小时级周期）从签到时刻起算；默认从第二天0点起算
-        var newLastCheckIn = (includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
-        var checkedDate = getTodayDateString();
+        // lastCheckIn 记录真实签到时刻；周期起点按勾选规则计算（未勾选整天周期=第二天0点）
+        var now = Date.now();
+        sendCheckIn(id, now, cycleBaseMs(now, task.includeToday || false, task.countdownHours));
+    }
 
+    async function sendCheckIn(id, lastCheckIn, cycleBase) {
         var res = await fetch(BASE_URL + '/api/checkin', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 id: id,
-                lastCheckIn: newLastCheckIn,
-                checkedDate: checkedDate
+                lastCheckIn: lastCheckIn,
+                cycleBase: cycleBase,
+                checkedDate: getTodayDateString()
             })
         });
         
@@ -1622,7 +1653,7 @@ export default {
         var now = Date.now();
         tasks.forEach(function(task) {
             // 与倒计时显示一致的截止时间口径
-            var deadline = task.lastCheckIn + (task.countdownHours * 60 * 60 * 1000);
+            var deadline = taskDeadline(task);
             var diff = deadline - now;
             if (diff > 0 && diff <= 86400000) setTaskSelection(task.id, true);
         });
@@ -1685,14 +1716,17 @@ export default {
                 var id = ids[i];
                 var task = tasks.find(function(t) { return t.id === id; });
                 if (!task) continue;
-                var unit = task.unit || 'hours';
-                var newLastCheckIn = (task.includeToday || unit === 'hours') ? Date.now() : getLocalEndOfDay();
-                var checkedDate = getTodayDateString();
+                var now = Date.now();
                 try {
                     var res = await fetch(BASE_URL + '/api/checkin', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ id: id, lastCheckIn: newLastCheckIn, checkedDate: checkedDate })
+                        body: JSON.stringify({
+                            id: id,
+                            lastCheckIn: now,
+                            cycleBase: cycleBaseMs(now, task.includeToday || false, task.countdownHours),
+                            checkedDate: getTodayDateString()
+                        })
                     });
                     if (res.ok) { success++; } else { fail++; }
                 } catch (e) { fail++; }
@@ -1749,6 +1783,7 @@ export default {
                 importance: task.importance || 'normal',
                 unit: task.unit || 'hours',
                 lastCheckIn: task.lastCheckIn,
+                cycleBase: typeof task.cycleBase === 'number' ? task.cycleBase : task.lastCheckIn,
                 includeToday: task.includeToday || false
             })
         });
@@ -1779,8 +1814,7 @@ export default {
 
         var hours = task.countdownHours;
         setCycleInputs('editTimeValue', 'editTimeUnit', hours);
-        setDeadlineInputs('editDeadlineDate', 'editDeadlineTime',
-            calcDeadlineFromStart(task.lastCheckIn, hours, task.includeToday || false));
+        setDeadlineInputs('editDeadlineDate', 'editDeadlineTime', taskDeadline(task));
 
         document.getElementById('editModal').classList.add('visible');
     }
@@ -1814,8 +1848,8 @@ export default {
                 if (deadlineMs == null) {
                     setCycleInputs('editTimeValue', 'editTimeUnit', 24);
                 } else if (deadlineMs > startMs) {
-                    var base = includeToday ? startMs : getStartOfDayMs(startMs);
-                    setCycleInputs('editTimeValue', 'editTimeUnit', (deadlineMs - base) / 3600000);
+                    var h = hoursFromDeadline(startMs, deadlineMs, includeToday);
+                    if (h != null) setCycleInputs('editTimeValue', 'editTimeUnit', h);
                 }
                 editing = false;
             });
@@ -1848,34 +1882,31 @@ export default {
         if (!startDateStr || !startTimeStr) return showToast('请选择开始时间', 'error');
 
         // 周期与截止时间联动：周期留空时由截止时间反推
+        var newLastCheckIn = new Date(startDateStr + 'T' + startTimeStr).getTime();
         var countdownHours = readCycleHours('editTimeValue', 'editTimeUnit');
         var deadlineMs = readDeadlineMs('editDeadlineDate', 'editDeadlineTime');
         if (countdownHours == null && deadlineMs == null) {
             return showToast('请填写倒计时周期或截止时间', 'error');
         } else if (countdownHours == null) {
-            var startForCalc = new Date(startDateStr + 'T' + startTimeStr).getTime();
-            var base = includeToday ? startForCalc : getStartOfDayMs(startForCalc);
-            if (deadlineMs <= base) return showToast('截止时间必须晚于起始时间', 'error');
-            countdownHours = (deadlineMs - base) / 3600000;
+            countdownHours = hoursFromDeadline(newLastCheckIn, deadlineMs, includeToday);
+            if (countdownHours == null) return showToast('截止时间必须晚于起始时间', 'error');
         }
 
         var unit;
         if (countdownHours % 720 === 0) unit = 'months';
         else if (countdownHours % 24 === 0) unit = 'days';
         else unit = 'hours';
-        
-        var startDateTime = new Date(startDateStr + 'T' + startTimeStr);
-        var newLastCheckIn = startDateTime.getTime();
 
         var task = tasks.find(function(t) { return t.id === id; });
         var startTimeChanged = task && Math.floor(task.lastCheckIn / 60000) !== Math.floor(newLastCheckIn / 60000);
 
-        var editData = { 
+        var editData = {
             id: id, name: name, targetUrl: targetUrl, countdownHours: countdownHours,
             priority: priority, importance: importance,
             unit: unit,
             includeToday: includeToday,
-            lastCheckIn: newLastCheckIn
+            lastCheckIn: newLastCheckIn,
+            cycleBase: cycleBaseMs(newLastCheckIn, includeToday, countdownHours)
         };
 
         if (startTimeChanged) {
