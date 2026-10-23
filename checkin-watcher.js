@@ -53,6 +53,37 @@ function formatRemainingTime(ms) {
   return str;
 }
 
+// 任务名称、网址等均为用户输入，拼进 HTML/邮件前必须转义
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// 仅允许 http(s) 链接，避免 javascript: 等协议进入邮件/页面
+function safeHttpUrl(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return '';
+  const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : 'http://' + raw;
+  try {
+    const parsed = new URL(withScheme);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// 定长比较，避免密码逐字符比较带来的时间侧信道
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 // 截止时间 = 周期起点 + 周期。周期起点 cycleBase 由前端存入（本地时区的"第二天0点"），
 // Worker 在 UTC 时区无法还原用户本地 0 点，所以只读取。
 // 旧数据/勾选任务没有 cycleBase 时回退 lastCheckIn（勾选任务 lastCheckIn 即签到时刻）。
@@ -64,18 +95,34 @@ function taskDeadline(task) {
 function createEmailHtml(task, remainingMs) {
   const deadline = new Date(taskDeadline(task));
   const remaining = formatRemainingTime(remainingMs);
-  const importanceLabel = task.importance === 'important' ? '⭐ 重要' : '普通';
+  const isImportant = task.importance === 'important';
+  const taskName = escapeHtml(task.name);
+  const targetUrl = safeHttpUrl(task.targetUrl);
+  const button = targetUrl
+    ? `<a href="${escapeHtml(targetUrl)}" target="_blank" style="display: inline-block; background: #52c41a; color: #ffffff; padding: 11px 22px; border-radius: 8px; text-decoration: none; font-size: 15px; font-weight: 600;">去签到 →</a>`
+    : '';
   return `
-    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-      <h2 style="color: #1890ff;">⏰ 签到提醒</h2>
-      <div style="background: #f0f5ff; border-radius: 8px; padding: 20px; margin: 15px 0;">
-        <p style="font-size: 16px; margin: 8px 0;"><strong>任务：</strong>${task.name}</p>
-        <p style="font-size: 16px; margin: 8px 0;"><strong>重要程度：</strong>${importanceLabel}</p>
-        <p style="font-size: 20px; color: #ff4d4f; margin: 12px 0;"><strong>剩余时间：${remaining}</strong></p>
-        <p style="font-size: 14px; color: #666; margin: 8px 0;">截止时间：${deadline.toLocaleString('zh-CN')}</p>
-        ${task.targetUrl ? `<p style="margin: 12px 0;"><a href="${task.targetUrl}" style="display: inline-block; background: #52c41a; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none;">去签到</a></p>` : ''}
+    <div style="margin: 0; padding: 24px 12px; background: #f5f7fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;">
+      <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border: 1px solid #e8ecf2; border-radius: 14px; overflow: hidden;">
+        <div style="background: linear-gradient(135deg, #1890ff, #096dd9); padding: 22px 26px; color: #ffffff;">
+          <div style="font-size: 12px; letter-spacing: 0.12em; opacity: 0.85;">CHECKIN WATCHER</div>
+          <div style="font-size: 21px; font-weight: 700; margin-top: 6px;">⏰ 签到提醒</div>
+        </div>
+        <div style="padding: 24px 26px;">
+          <p style="margin: 0 0 6px; font-size: 13px; color: #8c8c8c;">任务</p>
+          <p style="margin: 0 0 18px; font-size: 18px; font-weight: 600; color: #1f2329;">
+            ${taskName}${isImportant ? ' ⭐' : ''}
+          </p>
+          <div style="background: #fff7e6; border: 1px solid #ffe0a3; border-radius: 10px; padding: 14px 16px; margin-bottom: 18px;">
+            <p style="margin: 0; font-size: 15px; color: #d46b08;">剩余 <strong>${remaining}</strong></p>
+            <p style="margin: 6px 0 0; font-size: 13px; color: #8c6d3f;">截止时间：${escapeHtml(deadline.toLocaleString('zh-CN'))}</p>
+          </div>
+          ${button}
+          <p style="margin: 22px 0 0; padding-top: 16px; border-top: 1px solid #f0f0f0; font-size: 12px; color: #b0b4ba;">
+            此邮件由 Checkin Watcher 自动发送，请勿直接回复。
+          </p>
+        </div>
       </div>
-      <p style="color: #999; font-size: 12px;">此邮件由签到监控系统自动发送</p>
     </div>
   `;
 }
@@ -177,15 +224,27 @@ export default {
           headers: { 'Content-Type': 'application/json' }
         });
       }
+      // 简单限流：同一 IP 10 分钟内最多失败 10 次，避免密码被暴力枚举
+      const clientIp = request.headers.get("CF-Connecting-IP") || "unknown";
+      const failKey = `login_fail_${clientIp}`;
+      const failCount = parseInt(await KV.get(failKey) || "0", 10) || 0;
+      if (failCount >= 10) {
+        return new Response(JSON.stringify({ success: false, error: "尝试次数过多，请 10 分钟后再试" }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
       try {
         const body = await request.json();
         const password = body.password || "";
-        if (password !== env.ADMIN_PASSWORD) {
+        if (!safeEqual(password, env.ADMIN_PASSWORD)) {
+          await KV.put(failKey, String(failCount + 1), { expirationTtl: 10 * 60 });
           return new Response(JSON.stringify({ success: false, error: "密码错误" }), {
             status: 401,
             headers: { 'Content-Type': 'application/json' }
           });
         }
+        await KV.delete(failKey);
         const token = crypto.randomUUID();
         await KV.put(`session_${token}`, "valid", { expirationTtl: 8 * 60 * 60 });
         return new Response(JSON.stringify({ success: true, token }), {
@@ -229,11 +288,17 @@ export default {
       }
       const body = await request.json();
       const tasks = await getTasks(KV);
-      
+
+      // id 由服务端生成，避免并发/上传自定义 id 造成重复
+      let newId = typeof body.id === 'string' && body.id ? body.id : Date.now().toString();
+      if (tasks.some(t => t.id === newId)) {
+        newId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      }
+
       const newTask = {
-        id: body.id || Date.now().toString(),
-        name: body.name || "未命名任务",
-        targetUrl: typeof body.targetUrl === 'string' ? body.targetUrl : "",
+        id: newId,
+        name: (typeof body.name === 'string' && body.name.trim()) || "未命名任务",
+        targetUrl: typeof body.targetUrl === 'string' ? body.targetUrl.trim() : "",
         countdownHours: parseFloat(body.countdownHours) || 24,
         priority: Math.min(100, Math.max(0, parseInt(body.priority) || 0)),
         importance: body.importance === 'important' ? 'important' : 'normal',
@@ -264,8 +329,8 @@ export default {
         if (task.id === body.id) {
           return {
             ...task,
-            name: body.name,
-            targetUrl: typeof body.targetUrl === 'string' ? body.targetUrl : "",
+            name: (typeof body.name === 'string' && body.name.trim()) || task.name,
+            targetUrl: typeof body.targetUrl === 'string' ? body.targetUrl.trim() : "",
             countdownHours: parseFloat(body.countdownHours) || 24,
             priority: Math.min(100, Math.max(0, parseInt(body.priority) || 0)),
             importance: body.importance === 'important' ? 'important' : 'normal',
@@ -339,6 +404,19 @@ export default {
       let tasks = await getTasks(KV);
       tasks = tasks.filter(task => task.id !== taskId);
       await saveTasks(KV, tasks);
+
+      // 同步清理该任务的发信标记，避免 KV 中残留无效 key
+      const emailSettings = await getEmailSettings(KV);
+      const sent = emailSettings.sentNotifications || {};
+      let changed = false;
+      for (const key of Object.keys(sent)) {
+        if (key.startsWith(taskId + '_')) { delete sent[key]; changed = true; }
+      }
+      if (changed) {
+        emailSettings.sentNotifications = sent;
+        await KV.put("email_settings", JSON.stringify(emailSettings));
+      }
+
       return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -416,115 +494,181 @@ export default {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f0f2f5">
+    <meta name="description" content="签到监控看板 —— 定时签到、到期倒计时与邮件提醒">
     <title>签到监控看板</title>
+    <script>
+        // 在首屏绘制前应用主题，避免深色模式下出现白屏闪烁
+        try {
+            var savedTheme = localStorage.getItem('theme');
+            var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (savedTheme === 'dark' || (!savedTheme && systemDark)) {
+                document.documentElement.classList.add('dark');
+                var themeMeta = document.querySelector('meta[name="theme-color"]');
+                if (themeMeta) themeMeta.setAttribute('content', '#131417');
+            }
+        } catch (e) {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}">
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
     <style>
         :root {
             color-scheme: light;
             --primary: #1890ff; --primary-soft: #f0f5ff; --primary-border: #adc6ff;
-            --success: #52c41a; --warning: #faad14; --danger: #ff4d4f;
+            --success: #52c41a; --success-strong: #389e0d; --success-border: #b7eb8f;
+            --warning: #faad14; --danger: #ff4d4f;
             --danger-bg: #fff1f0; --danger-border: #ffa39e;
-            --bg: #f0f2f5; --card-bg: #fff; --text: #333; --text-secondary: #666; --text-muted: #8c8c8c;
-            --border: #eee; --input-bg: #fafafa; --input-border: #ddd; --btn-default-bg: #f0f0f0;
+            --bg: #f0f2f5; --card-bg: #fff; --text: #1f2329; --text-secondary: #5c6670; --text-muted: #8c8c8c;
+            --border: #ebeef2; --input-bg: #fafbfc; --input-border: #d9dee5; --btn-default-bg: #f0f2f5;
             --important-bg: #fffbe6; --overdue-bg: #fff2f0; --selected-bg: #f0f8ff;
-            --status-bg: #f9f9f9; --success-bg: #f6ffed; --error-bg: #fff2f0;
-            --skeleton-hi: #f7f8fa; --shadow: 0 2px 10px rgba(0,0,0,0.04);
+            --status-bg: #f7f9fb; --success-bg: #f6ffed; --error-bg: #fff2f0;
+            --skeleton-hi: #f7f8fa;
+            --shadow: 0 1px 3px rgba(16,24,40,0.04), 0 4px 12px rgba(16,24,40,0.04);
+            --shadow-hover: 0 8px 24px rgba(16,24,40,0.10);
+            --page-glow: rgba(24,144,255,0.10);
+            --radius: 14px;
             --fill-l: 44%; --fill-ls: 14%;
         }
         /* 深色主题：默认跟随系统，点击右上角 🌙 按钮可手动切换（存 localStorage） */
         :root.dark {
             color-scheme: dark;
             --primary: #40a9ff; --primary-soft: rgba(64,169,255,0.12); --primary-border: rgba(64,169,255,0.45);
-            --success: #73d13d; --warning: #ffc53d; --danger: #ff7875;
+            --success: #73d13d; --success-strong: #95de64; --success-border: rgba(115,211,61,0.40);
+            --warning: #ffc53d; --danger: #ff7875;
             --danger-bg: rgba(255,77,79,0.10); --danger-border: rgba(255,120,120,0.40);
-            --bg: #131417; --card-bg: #1f1f23; --text: #e6e6e6; --text-secondary: #a6a6a6; --text-muted: #8c8c8c;
-            --border: #2e2e33; --input-bg: #26262b; --input-border: #3a3a40; --btn-default-bg: #2a2a2e;
+            --bg: #131417; --card-bg: #1c1d21; --text: #e8eaed; --text-secondary: #b3b8bf; --text-muted: #8f959e;
+            --border: #2c2d33; --input-bg: #24252a; --input-border: #3a3b42; --btn-default-bg: #2a2b31;
             --important-bg: rgba(250,173,20,0.08); --overdue-bg: rgba(255,77,79,0.07); --selected-bg: rgba(64,169,255,0.10);
-            --status-bg: #26262a; --success-bg: rgba(115,211,61,0.10); --error-bg: rgba(255,77,79,0.10);
-            --skeleton-hi: #2a2a2e; --shadow: 0 2px 10px rgba(0,0,0,0.25);
+            --status-bg: #24252a; --success-bg: rgba(115,211,61,0.10); --error-bg: rgba(255,77,79,0.10);
+            --skeleton-hi: #2c2d33;
+            --shadow: 0 1px 3px rgba(0,0,0,0.30), 0 4px 12px rgba(0,0,0,0.25);
+            --shadow-hover: 0 8px 24px rgba(0,0,0,0.45);
+            --page-glow: rgba(64,169,255,0.10);
             --fill-l: 50%; --fill-ls: 8%;
         }
+        *, *::before, *::after { box-sizing: border-box; }
         @property --t { syntax: '<number>'; inherits: false; initial-value: 1; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: var(--bg); margin: 0; padding: 20px 20px 40px 20px; color: var(--text); transition: background-color 0.3s, color 0.3s; }
-        .layout-container { display: flex; flex-direction: column; gap: 24px; max-width: 1400px; margin: 0 auto; }
-        /* 宽屏下三列，窄屏回落两列 */
-        @media (min-width: 1400px) { .task-list { grid-template-columns: repeat(3, 1fr); } }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", Roboto, sans-serif;
+            background-color: var(--bg);
+            background-image: radial-gradient(1100px 420px at 50% -180px, var(--page-glow), transparent 70%);
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+            margin: 0;
+            padding: 20px 20px 40px;
+            color: var(--text);
+            transition: background-color 0.3s, color 0.3s;
+            min-height: 100vh;
+            -webkit-text-size-adjust: 100%;
+        }
+        ::selection { background: var(--primary-soft); color: var(--primary); }
+        .layout-container { display: flex; flex-direction: column; gap: 22px; max-width: 1400px; margin: 0 auto; }
+        .main-content { display: flex; flex-direction: column; gap: 14px; }
+        /* 顶部标题栏 */
+        .app-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 2px 2px 0; }
+        .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+        .brand-logo { width: 44px; height: 44px; border-radius: 13px; flex-shrink: 0; box-shadow: 0 6px 16px rgba(24,144,255,0.28); }
+        .page-title { margin: 0; font-size: 1.5rem; font-weight: 700; line-height: 1.2; letter-spacing: 0.01em; color: var(--text); }
+        .brand-sub { margin: 3px 0 0; font-size: 0.8rem; color: var(--text-muted); }
         /* 统计面板 */
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 6px; }
-        .stat-card { background: var(--card-bg); border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow); }
-        .stat-card .stat-label { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px; }
-        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-        .stat-card .stat-value.stat-blue { color: var(--primary); }
-        .stat-card .stat-value.stat-green { color: var(--success); }
-        .stat-card .stat-value.stat-orange { color: var(--warning); }
-        .stat-card .stat-value.stat-red { color: var(--danger); }
-        @media (max-width: 768px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+        .stat-card { display: flex; align-items: center; gap: 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow); transition: transform 0.2s ease, box-shadow 0.2s ease; }
+        .stat-icon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-size: 1.2rem; flex-shrink: 0; }
+        .stat-body { min-width: 0; }
+        .stat-label { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 4px; white-space: nowrap; }
+        .stat-value { font-size: 1.75rem; font-weight: 700; line-height: 1.1; color: var(--text); font-variant-numeric: tabular-nums; }
+        .stat-card.stat-blue .stat-icon { background: var(--primary-soft); }
+        .stat-card.stat-blue .stat-value { color: var(--primary); }
+        .stat-card.stat-green .stat-icon { background: var(--success-bg); }
+        .stat-card.stat-green .stat-value { color: var(--success); }
+        .stat-card.stat-orange .stat-icon { background: var(--important-bg); }
+        .stat-card.stat-orange .stat-value { color: var(--warning); }
+        .stat-card.stat-red .stat-icon { background: var(--danger-bg); }
+        .stat-card.stat-red .stat-value { color: var(--danger); }
+        @media (max-width: 900px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
         /* 批量选择 */
         .task-item .task-checkbox { width: 18px; height: 18px; cursor: pointer; accent-color: var(--primary); flex-shrink: 0; }
-        .task-item.task-selected { border-color: var(--primary); background-color: var(--selected-bg); box-shadow: 0 2px 8px rgba(24, 144, 255, 0.15); }
-        .task-item.task-selected.overdue { border-color: var(--danger); }
-        .batch-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; background: var(--card-bg); border: 1px solid var(--primary); border-radius: 10px; padding: 8px 14px; box-shadow: 0 2px 8px rgba(24,144,255,0.12); }
-        .batch-bar #batchCount { font-size: 0.9rem; color: var(--primary); font-weight: 500; }
+        .task-item.task-selected { border-color: var(--primary); background-color: var(--selected-bg); box-shadow: 0 0 0 3px var(--primary-soft); }
+        .task-item.task-selected.overdue { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-bg); }
+        .batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; box-shadow: var(--shadow); }
+        .batch-bar #batchCount { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-right: auto; }
+        .batch-bar .btn { padding: 7px 12px; font-size: 0.82rem; }
+        .btn-batch-delete { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-border); }
+        .btn-ghost { background: var(--btn-default-bg); color: var(--text-secondary); }
+        .btn-block { width: 100%; }
         /* 任务进度条 */
         .task-progress-wrap { grid-column: 1 / -1; }
         .task-progress { display: flex; align-items: center; gap: 10px; }
-        .task-progress-bar { flex: 1; height: 6px; background: var(--input-bg); border-radius: 3px; overflow: hidden; }
-        .task-progress-fill { height: 100%; border-radius: 3px; background: hsl(calc(83 * var(--t, 1)), 75%, calc(var(--fill-l) + var(--fill-ls) * (1 - var(--t, 1)))); transition: width 0.3s ease, --t 0.3s linear; }
-        .task-progress-text { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+        .task-progress-bar { flex: 1; height: 6px; background: var(--input-bg); border-radius: 999px; overflow: hidden; }
+        .task-progress-fill { height: 100%; border-radius: 999px; background: hsl(calc(83 * var(--t, 1)), 75%, calc(var(--fill-l) + var(--fill-ls) * (1 - var(--t, 1)))); transition: width 0.3s ease, --t 0.3s linear; }
+        .task-progress-fill.overdue { background: var(--danger); }
+        .task-progress-text { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
         .task-progress-text.overdue { color: var(--danger); }
         /* 底部系统信息栏 */
         .footer { text-align: center; padding: 20px; font-size: 0.8rem; color: var(--text-muted); border-top: 1px solid var(--border); }
-        .card { background: var(--card-bg); padding: 25px; border-radius: 12px; box-shadow: var(--shadow); }
-        h2 { margin-top: 0; font-size: 1.4rem; color: var(--text); margin-bottom: 20px; font-weight: 600; }
-        .page-title { text-align: center; font-size: 1.8rem; margin-bottom: 18px; color: var(--text); }
-        .page-title img { height: 1.6rem; vertical-align: middle; margin-right: 8px; }
+        .card { background: var(--card-bg); padding: 25px; border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
+        h2 { margin: 0 0 18px; font-size: 1.2rem; color: var(--text); font-weight: 600; }
 
-        .add-form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; align-items: flex-end; }
+        .add-form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; align-items: end; }
         @media (max-width: 768px) { .add-form-grid { grid-template-columns: 1fr; } }
 
-        .form-group label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: var(--text-secondary); }
-        .form-group input, .form-group select { width: 100%; padding: 10px; border: 1px solid var(--input-border); border-radius: 8px; box-sizing: border-box; background: var(--input-bg); color: var(--text); }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+        .form-group label { display: block; margin-bottom: 6px; font-size: 0.88rem; color: var(--text-secondary); font-weight: 500; }
+        .form-group input, .form-group select { width: 100%; padding: 10px 12px; border: 1px solid var(--input-border); border-radius: 9px; background: var(--input-bg); color: var(--text); font-size: 0.92rem; transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s; }
+        .form-group input::placeholder { color: var(--text-muted); }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); background: var(--card-bg); }
+        .hint { display: block; margin-top: 6px; font-size: 0.78rem; line-height: 1.5; color: var(--text-muted); }
         .input-row { display: flex; gap: 10px; }
+        .input-row > * { min-width: 0; }
 
-        .btn { box-sizing: border-box; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: all 0.2s; white-space: nowrap; }
-        .btn:hover { opacity: 0.85; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-primary { background-color: var(--primary); color: #fff; width: 100%; height: 42px; font-size: 1rem; font-weight: 500; display: flex; align-items: center; justify-content: center; padding: 0 24px; }
-        .btn-action-primary { background-color: var(--success); color: #fff; font-weight: 500; border: 1px solid transparent; padding: 6px 10px; }
-        .btn-action-secondary { background-color: var(--primary-soft); color: var(--primary); border: 1px solid var(--primary-border); font-weight: 500; padding: 6px 10px; }
-        .btn-action-primary:disabled { background-color: var(--success); }
+        .btn { border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: background-color 0.2s, color 0.2s, box-shadow 0.2s, opacity 0.2s, transform 0.1s; white-space: nowrap; }
+        .btn:hover:not(:disabled) { filter: brightness(1.05); }
+        .btn:active:not(:disabled) { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .btn:focus-visible, .btn-text:focus-visible, .theme-toggle:focus-visible, .login-btn:focus-visible, .logout-btn:focus-visible, .btn-add-trigger:focus-visible, .collapse-header:focus-visible, .trigger-row .btn-remove:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+        .btn-primary { background-color: var(--primary); background-image: linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0)); color: #fff; width: 100%; height: 42px; font-size: 1rem; font-weight: 600; display: flex; align-items: center; justify-content: center; padding: 0 24px; box-shadow: 0 4px 12px rgba(24,144,255,0.22); }
+        .btn-action-primary { background-color: var(--success); color: #fff; font-weight: 500; border: 1px solid transparent; padding: 6px 12px; box-shadow: 0 2px 6px rgba(82,196,26,0.22); }
+        .btn-action-secondary { background-color: var(--primary-soft); color: var(--primary); border: 1px solid var(--primary-border); font-weight: 500; padding: 6px 12px; }
+        .btn-danger { background-color: var(--danger); color: #fff; box-shadow: 0 2px 8px rgba(255,77,79,0.25); }
         .btn.modal-cancel { background: var(--btn-default-bg); color: var(--text); width: 100%; height: 42px; }
 
-        .text-actions { display: flex; gap: 0; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--border); }
-        .btn-text { background: none; border: none; cursor: pointer; font-size: 0.8rem; padding: 4px 4px; color: var(--text-muted); transition: color 0.2s; white-space: nowrap; }
+        .text-actions { display: flex; gap: 2px; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--border); }
+        .btn-text { background: none; border: none; cursor: pointer; font-size: 0.8rem; padding: 4px 6px; border-radius: 6px; color: var(--text-muted); transition: color 0.2s, background-color 0.2s; white-space: nowrap; }
+        .btn-text:hover { background: var(--btn-default-bg); }
         .btn-text.edit:hover { color: var(--primary); }
         .btn-text.copy:hover { color: var(--success); }
         .btn-text.delete:hover { color: var(--danger); }
 
-        .task-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; }
+        .task-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; align-items: start; }
         @media (max-width: 768px) { .task-list { grid-template-columns: 1fr; } }
+        /* 宽屏三列（写在基础规则之后，否则会被覆盖） */
+        @media (min-width: 1400px) { .task-list { grid-template-columns: repeat(3, 1fr); } }
 
         /* 骨架屏 */
-        .skeleton-card { background: var(--card-bg); border: 1px solid var(--border); padding: 16px 25px; border-radius: 12px; }
+        .skeleton-card { background: var(--card-bg); border: 1px solid var(--border); padding: 16px 20px; border-radius: var(--radius); }
         .sk-line { height: 14px; border-radius: 7px; background: linear-gradient(90deg, var(--input-bg) 25%, var(--skeleton-hi) 50%, var(--input-bg) 75%); background-size: 200% 100%; animation: sk-shimmer 1.2s infinite; }
         .sk-line.title { width: 35%; height: 18px; }
         .sk-line.big { width: 25%; height: 26px; margin: 10px auto; }
         .sk-line.bar { width: 100%; height: 8px; margin-top: 14px; }
         @keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-        /* 桌面端：卡片内两列布局 */
-        .task-item { display: grid; grid-template-columns: 1fr auto 1fr; grid-template-rows: auto auto; align-items: center; gap: 6px 0; background: var(--card-bg); border: 1px solid var(--border); padding: 16px 25px; border-radius: 12px; transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s; }
-        .task-item:hover { box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
-        .task-item.important { border-color: var(--warning); background-color: var(--important-bg); box-shadow: 0 2px 8px rgba(250, 173, 20, 0.15); }
-        .task-item.overdue { border-color: var(--danger); background-color: var(--overdue-bg); box-shadow: none; }
+        /* 卡片布局：第一行 名称 + 主操作；第二行 倒计时 + 次级操作；第三行 进度条 */
+        .task-item { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto auto; align-items: center; gap: 8px 12px; background: var(--card-bg); border: 1px solid var(--border); padding: 15px 20px; border-radius: var(--radius); transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s, transform 0.2s; }
+        @media (hover: hover) {
+            .task-item:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+            .stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-hover); }
+        }
+        .task-item.important { border-color: var(--warning); background-color: var(--important-bg); }
+        .task-item.important::before { content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--warning); }
+        .task-item.overdue { border-color: var(--danger); background-color: var(--overdue-bg); }
+        .task-item.overdue::before { content: ''; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--danger); }
 
-        .task-left { grid-row: 1; justify-self: start; font-weight: 600; font-size: 1.15rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: flex; align-items: center; gap: 8px; }
-        .task-center { grid-row: 1; justify-self: center; text-align: center; }
-        .task-right { grid-row: 1; justify-self: end; display: flex; gap: 8px; align-items: center; }
-        .task-progress-wrap { grid-column: 1 / -1; grid-row: 2; padding-top: 2px; }
-        .countdown-display { font-size: 1.6rem; font-weight: 700; color: var(--success); font-variant-numeric: tabular-nums; }
+        .task-left { grid-column: 1; grid-row: 1; justify-self: stretch; min-width: 0; font-weight: 600; font-size: 1.05rem; color: var(--text); display: flex; align-items: center; gap: 8px; }
+        .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .task-actions { grid-column: 2; grid-row: 1; justify-self: end; display: flex; gap: 8px; align-items: center; }
+        .task-center { grid-column: 1; grid-row: 2; justify-self: start; text-align: left; }
+        .task-text-actions { grid-column: 2; grid-row: 2; justify-self: end; align-self: center; border-left: none; padding-left: 0; margin-left: 0; }
+        .task-progress-wrap { grid-column: 1 / -1; grid-row: 3; padding-top: 2px; }
+        .countdown-display { font-size: 1.5rem; font-weight: 700; color: var(--success); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; line-height: 1.2; }
         .countdown-display.overdue { color: var(--danger); }
         .countdown-display.due-soon { color: var(--danger); }
         .countdown-display.fresh { color: var(--success); }
@@ -533,141 +677,141 @@ export default {
         .countdown-display .days { font-size: 1.2em; }
         .countdown-display .unit { font-size: 0.85rem; }
 
-        .important-badge { color: var(--warning); font-size: 1rem; }
-        .checked-badge { background: var(--success); color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+        .important-badge { color: var(--warning); font-size: 1rem; flex-shrink: 0; }
+        .checked-badge { background: var(--success-bg); color: var(--success-strong); border: 1px solid var(--success-border); font-size: 0.7rem; padding: 1px 8px; border-radius: 999px; font-weight: 600; flex-shrink: 0; }
 
-        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; }
+        /* 空状态 / 加载失败 */
+        .task-empty { grid-column: 1 / -1; text-align: center; padding: 56px 20px; color: var(--text-muted); background: var(--card-bg); border: 1px dashed var(--input-border); border-radius: var(--radius); }
+        .task-empty-icon { font-size: 2.6rem; margin-bottom: 12px; opacity: 0.85; }
+        .task-empty-title { font-size: 1rem; font-weight: 600; color: var(--text-secondary); }
+        .task-empty-sub { font-size: 0.85rem; margin-top: 6px; }
+        .task-error { grid-column: 1 / -1; text-align: center; padding: 40px 20px; color: var(--danger); background: var(--error-bg); border: 1px solid var(--danger-border); border-radius: var(--radius); }
+
+        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.5); backdrop-filter: blur(2px); justify-content: center; align-items: center; padding: 16px; z-index: 1000; }
         .modal-overlay.visible { display: flex; animation: fadeIn 0.2s ease; }
-        .modal-content { background: var(--card-bg); color: var(--text); padding: 25px; border-radius: 12px; width: 400px; max-width: 90%; box-shadow: 0 8px 30px rgba(0,0,0,0.2); animation: popIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .modal-content { background: var(--card-bg); color: var(--text); padding: 24px; border-radius: 16px; width: 420px; max-width: 100%; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border); box-shadow: 0 24px 60px rgba(0,0,0,0.25); animation: popIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .modal-content h2 { margin: 0 0 18px; font-size: 1.2rem; }
+        .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+        .confirm-modal { width: 360px; }
+        .confirm-msg { margin: 0 0 18px; font-size: 0.95rem; line-height: 1.65; color: var(--text-secondary); }
+        .confirm-actions { display: flex; gap: 10px; }
+        .confirm-actions .btn { flex: 1; height: 40px; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes popIn { from { opacity: 0; transform: scale(0.92) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
         .modal-content .form-group { margin-bottom: 15px; }
 
         /* toast 通知 */
-        #toastWrap { position: fixed; right: 16px; bottom: 16px; z-index: 2000; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
-        .toast { background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 8px; padding: 12px 18px; font-size: 0.9rem; box-shadow: 0 6px 20px rgba(0,0,0,0.18); animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); max-width: 320px; }
+        #toastWrap { position: fixed; right: 16px; bottom: 16px; z-index: 2000; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; pointer-events: none; }
+        .toast { pointer-events: auto; background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 10px; padding: 12px 16px; font-size: 0.88rem; line-height: 1.5; box-shadow: 0 10px 30px rgba(0,0,0,0.18); animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); max-width: min(340px, 80vw); }
         .toast.success { border-left-color: var(--success); }
         .toast.error { border-left-color: var(--danger); }
         .toast.hide { animation: toastOut 0.3s ease forwards; }
         @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(40px); } }
 
-        .collapse-header { cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }
+        .collapse-header { cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 12px; user-select: none; transition: color 0.2s; }
         .collapse-header:hover { color: var(--primary); }
         .collapse-header.locked { cursor: not-allowed; color: var(--text-muted); }
-        .collapse-arrow { font-size: 1.2rem; transition: transform 0.2s; display: inline-block; }
+        .collapse-header.locked:hover { color: var(--text-muted); }
+        .collapse-arrow { font-size: 1rem; color: var(--text-muted); transition: transform 0.2s; display: inline-block; }
         .collapse-arrow.open { transform: rotate(90deg); }
         .collapse-body { overflow: hidden; transition: max-height 0.3s ease; }
 
-        .top-bar { display: flex; justify-content: flex-end; align-items: center; margin-bottom: 10px; gap: 8px; }
-        .theme-toggle { background: var(--btn-default-bg); border: 1px solid var(--border); color: var(--text); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; font-size: 1rem; line-height: 1; transition: background-color 0.2s; }
+        .top-bar { display: flex; align-items: center; gap: 8px; }
+        .theme-toggle { background: var(--btn-default-bg); border: 1px solid var(--border); color: var(--text); width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 1rem; line-height: 1; transition: background-color 0.2s; }
         .theme-toggle:hover { background: var(--primary-soft); }
-        .login-btn { background: var(--primary); color: white; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; border: none; }
-        .login-btn.logged-in { background: var(--success); }
-        .logout-btn { background: var(--danger); color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; border: none; margin-left: 8px; }
+        .login-btn { background: var(--primary); color: #fff; padding: 8px 16px; border-radius: 9px; cursor: pointer; font-size: 0.88rem; font-weight: 500; border: none; box-shadow: 0 4px 12px rgba(24,144,255,0.22); transition: filter 0.2s; }
+        .login-btn:hover { filter: brightness(1.06); }
+        .login-btn.logged-in { background: var(--success); box-shadow: 0 4px 12px rgba(82,196,26,0.22); cursor: default; }
+        .logout-btn { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-border); padding: 7px 14px; border-radius: 9px; cursor: pointer; font-size: 0.88rem; font-weight: 500; transition: filter 0.2s; }
+        .logout-btn:hover { filter: brightness(0.97); }
 
         /* 邮件通知设置样式 */
-        .trigger-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .trigger-row input { flex: 1; padding: 8px; border: 1px solid var(--input-border); border-radius: 6px; background: var(--input-bg); color: var(--text); }
-        .trigger-row input:focus { outline: none; border-color: var(--primary); }
-        .trigger-row .btn-remove { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 1.2rem; padding: 4px 8px; }
-        .trigger-row .btn-remove:hover { opacity: 0.7; }
-        .btn-add-trigger { background: none; border: 1px dashed var(--primary); color: var(--primary); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+        .trigger-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .trigger-row input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--input-border); border-radius: 8px; background: var(--input-bg); color: var(--text); }
+        .trigger-row input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+        .trigger-row .unit-label { font-size: 0.82rem; color: var(--text-muted); min-width: 32px; }
+        .trigger-row .btn-remove { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 1rem; padding: 4px 8px; border-radius: 6px; line-height: 1; }
+        .trigger-row .btn-remove:hover { background: var(--danger-bg); }
+        .btn-add-trigger { background: none; border: 1px dashed var(--primary-border); color: var(--primary); padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; transition: background-color 0.2s; }
         .btn-add-trigger:hover { background: var(--primary-soft); }
-        .email-status { font-size: 0.85rem; color: var(--text-muted); padding: 8px 12px; background: var(--status-bg); border-radius: 6px; margin-top: 5px; }
-        .email-status.success { color: var(--success); background: var(--success-bg); }
+        .email-status { font-size: 0.85rem; color: var(--text-muted); padding: 9px 12px; background: var(--status-bg); border-radius: 8px; margin-top: 5px; min-height: 38px; display: flex; align-items: center; }
+        .email-status.success { color: var(--success-strong); background: var(--success-bg); }
         .email-status.error { color: var(--danger); background: var(--error-bg); }
-        .inline-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .inline-group { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
         .inline-group label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.9rem; }
-        .inline-group input[type="radio"] { width: 16px; height: 16px; cursor: pointer; }
+        .inline-group input[type="radio"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
 
         /* 移动端适配 */
-        @media (max-width: 600px) {
-            body { padding: 10px 10px 60px 10px; }
-            .page-title { font-size: 1.5rem; margin-bottom: 20px; }
-            .page-title img { height: 1.4rem; }
-            .card { padding: 15px; }
-            
+        @media (max-width: 640px) {
+            body { padding: 12px 12px 48px; }
+            .app-header { gap: 10px; }
+            .brand { gap: 10px; }
+            .brand-logo { width: 38px; height: 38px; border-radius: 11px; }
+            .page-title { font-size: 1.22rem; }
+            .brand-sub { font-size: 0.72rem; }
+            .stats-grid { gap: 10px; }
+            .stat-card { padding: 12px 13px; gap: 10px; }
+            .stat-icon { width: 36px; height: 36px; border-radius: 10px; font-size: 1rem; }
+            .stat-value { font-size: 1.4rem; }
+            .stat-label { font-size: 0.74rem; }
+            .card { padding: 16px; }
+            .collapse-header { font-size: 1.05rem; }
+            .batch-bar #batchCount { width: 100%; margin-right: 0; }
+
             /* 任务卡片改为垂直布局 */
-            .task-item { 
-                display: flex; 
-                flex-direction: column; 
-                gap: 12px; 
-                padding: 15px; 
-            }
-            .task-left { 
-                font-size: 1rem; 
-                white-space: normal; 
-                word-break: break-word; 
-                display: flex; 
-                flex-wrap: wrap;
-                align-items: center;
-            }
-            .task-center { 
-                text-align: center;   /* 倒计时居中 */
-                width: 100%; 
-            }
-            .countdown-display { 
-                font-size: 1.3rem; 
-            }
-            .task-right { 
-                display: flex; 
-                flex-wrap: wrap; 
-                gap: 8px; 
-                justify-content: center;   /* 按钮组居中 */
-                width: 100%; 
-            }
-            .text-actions {
-                margin-left: 0;
-                padding-left: 0;
-                border-left: none;
-            }
-            .task-progress-wrap {
-                grid-column: auto;
-                grid-row: auto;
-                width: 100%;
-                order: 4;
-            }
-            .btn {
-                font-size: 0.8rem;
-                padding: 6px 10px;
-            }
-            .btn-primary { 
-                height: 38px; 
-                font-size: 0.9rem; 
-            }
-            .btn-action-primary, .btn-action-secondary { 
-                padding: 6px 12px; 
-            }
-            .unit { 
-                font-size: 0.8rem; 
-            }
+            .task-item { display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 15px; }
+            .task-left { font-size: 1rem; flex-wrap: wrap; }
+            .task-name { white-space: normal; word-break: break-word; }
+            .task-center { width: 100%; text-align: center; }
+            .countdown-display { font-size: 1.35rem; }
+            .task-actions { justify-content: center; flex-wrap: wrap; gap: 8px; width: 100%; }
+            .task-text-actions { justify-content: center; width: 100%; }
+            .text-actions { margin-left: 0; padding-left: 0; border-left: none; }
+            .task-progress-wrap { width: 100%; order: 4; }
+            .btn { font-size: 0.82rem; padding: 6px 10px; }
+            .btn-primary { height: 40px; font-size: 0.95rem; }
+            .btn-action-primary, .btn-action-secondary { padding: 6px 12px; }
+            .unit { font-size: 0.8rem; }
+            #toastWrap { left: 12px; right: 12px; align-items: stretch; }
+            .toast { max-width: none; }
+        }
+        /* 尊重系统"减少动态效果"偏好 */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
         }
     </style>
 </head>
 <body>
 
-<div class="top-bar" id="topBar">
-    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换深浅色">🌙</button>
-    <button class="login-btn" id="loginBtn" onclick="showLogin()">🔐 登录</button>
-</div>
-
 <div class="layout-container">
+    <header class="app-header">
+        <div class="brand">
+            <img class="brand-logo" src="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}" alt="">
+            <div>
+                <h1 class="page-title">签到监控看板</h1>
+                <p class="brand-sub">Checkin Watcher · 到期自动提醒</p>
+            </div>
+        </div>
+        <div class="top-bar" id="topBar">
+            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换深色模式" aria-label="切换深色模式">🌙</button>
+            <button class="login-btn" id="loginBtn" onclick="showLogin()">🔐 登录</button>
+        </div>
+    </header>
     <div class="main-content">
-        <h2 class="page-title"><img src="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1890ff"/><circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-width="3"/><polyline points="32,22 32,33 40,33" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="38,42 44,48 52,38" fill="none" stroke="#52c41a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}" style="height:1.6rem;vertical-align:middle;margin-right:8px;" alt=""> 签到监控看板</h2>
-        <div class="stats-grid" id="statsGrid"></div>
-        <div id="batchBar" class="batch-bar" style="margin-bottom: 12px;">
+        <div class="stats-grid" id="statsGrid" aria-label="任务统计"></div>
+        <div id="batchBar" class="batch-bar" style="display: none;">
             <span id="batchCount">已选 0 项</span>
             <button id="batchCheckinBtn" class="btn btn-action-primary" onclick="batchCheckIn()">✅ 批量签到</button>
-            <button id="batchDeleteBtn" class="btn" style="background:var(--danger-bg); color:var(--danger); border:1px solid var(--danger-border);" onclick="batchDelete()">🗑 删除所选</button>
-            <button id="dueSoonBtn" class="btn" style="background:var(--primary-soft); color:var(--primary); border:1px solid var(--primary-border);" onclick="selectDueSoon()">⏰ 选中即将到期</button>
-            <button id="clearSelBtn" class="btn" style="background:var(--btn-default-bg); color:var(--text-secondary);" onclick="clearSelection()">清空选择</button>
+            <button id="batchDeleteBtn" class="btn btn-batch-delete" onclick="batchDelete()">🗑 删除所选</button>
+            <button id="dueSoonBtn" class="btn btn-action-secondary" onclick="selectDueSoon()">⏰ 选中即将到期</button>
+            <button id="clearSelBtn" class="btn btn-ghost" onclick="clearSelection()">清空选择</button>
         </div>
         <div id="tasksList" class="task-list"></div>
     </div>
 
     <div class="card" id="addCard">
-        <h2 id="addSectionHeader" class="collapse-header locked">
+        <h2 id="addSectionHeader" class="collapse-header locked" role="button" tabindex="0" aria-expanded="false" aria-controls="addSectionBody" aria-disabled="true">
             <span id="addTitle">🔒 登录后可添加签到项</span>
             <span id="addSectionArrow" class="collapse-arrow">▶</span>
         </h2>
@@ -705,7 +849,7 @@ export default {
                         <input type="date" id="addDeadlineDate" style="flex: 1.5;">
                         <input type="time" id="addDeadlineTime" style="flex: 1;">
                     </div>
-                    <span style="font-size: 0.8rem; color: #999;">填写后自动计算周期，与周期互相联动</span>
+                    <span class="hint">填写后自动计算周期，与周期互相联动</span>
                 </div>
                 <div class="form-group" style="margin-bottom: 0;">
                     <label>优先级 (0最低, 100最高)</label>
@@ -723,10 +867,10 @@ export default {
                         <input type="checkbox" id="addIncludeToday" style="width: 18px; height: 18px; cursor: pointer;">
                         <span>从起始时间开始</span>
                     </label>
-                    <span style="font-size: 0.8rem; color: #999;">默认从第二天0点开始计算周期，勾选后从起始/签到时刻起算</span>
+                    <span class="hint">默认从第二天0点开始计算周期，勾选后从起始/签到时刻起算</span>
                 </div>
                 <div class="form-group" style="margin-bottom: 0;">
-                    <button class="btn btn-primary" onclick="addTask()">添加</button>
+                    <button class="btn btn-primary" id="addSubmitBtn" onclick="addTask()">添加</button>
                 </div>
             </div>
         </div>
@@ -734,7 +878,7 @@ export default {
 
     <!-- 邮件通知设置 -->
     <div class="card" id="emailCard">
-    <h2 id="emailSectionHeader" class="collapse-header locked">
+    <h2 id="emailSectionHeader" class="collapse-header locked" role="button" tabindex="0" aria-expanded="false" aria-controls="emailSectionBody" aria-disabled="true">
         <span id="emailTitle">🔒 登录后可配置邮件通知</span>
         <span id="emailSectionArrow" class="collapse-arrow">▶</span>
     </h2>
@@ -761,10 +905,10 @@ export default {
                 <button class="btn-add-trigger" onclick="addTriggerRow()">+ 添加触发时间</button>
             </div>
             <div class="form-group" style="margin-bottom: 0;">
-                <button class="btn btn-primary" onclick="saveEmailSettings()">保存设置</button>
+                <button class="btn btn-primary" id="emailSaveBtn" onclick="saveEmailSettings()">保存设置</button>
             </div>
             <div class="form-group" style="margin-bottom: 0;">
-                <button class="btn btn-action-secondary" onclick="testEmail()" style="width:100%;">测试邮件</button>
+                <button class="btn btn-action-secondary btn-block" id="emailTestBtn" onclick="testEmail()">测试邮件</button>
             </div>
             <div class="form-group" style="margin-bottom: 0;">
                 <div id="emailStatus" class="email-status" style="margin-top: 0;"></div>
@@ -776,24 +920,24 @@ export default {
 <div class="footer" id="footerBar">Checkin Watcher v1.0 · 载入中...</div>
 <div id="toastWrap"></div>
 <!-- 登录弹窗 -->
-<div id="loginModal" class="modal-overlay">
+<div id="loginModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
     <div class="modal-content">
-        <h2>管理员登录</h2>
+        <h2 id="loginModalTitle">管理员登录</h2>
         <div class="form-group">
-            <label>密码</label>
-            <input type="password" id="loginPassword" placeholder="请输入管理员密码">
+            <label for="loginPassword">密码</label>
+            <input type="password" id="loginPassword" placeholder="请输入管理员密码" autocomplete="current-password">
         </div>
-        <div style="display: flex; gap: 10px; margin-top: 10px;">
+        <div class="modal-actions">
             <button class="btn btn-primary" id="loginSubmitBtn" onclick="doLogin()">登录</button>
             <button class="btn modal-cancel" onclick="closeLoginModal()">取消</button>
         </div>
-        <p id="loginError" style="color: var(--danger); font-size: 0.9rem; display: none;"></p>
+        <p id="loginError" style="color: var(--danger); font-size: 0.9rem; display: none; margin-bottom: 0;"></p>
     </div>
 </div>
 
-<div id="editModal" class="modal-overlay">
+<div id="editModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
     <div class="modal-content">
-        <h2 style="margin-bottom: 15px;">编辑项</h2>
+        <h2 id="editModalTitle" style="margin-bottom: 15px;">编辑项</h2>
         <input type="hidden" id="editId">
         <div class="form-group">
             <label>名称</label>
@@ -827,7 +971,7 @@ export default {
                 <input type="date" id="editDeadlineDate" style="flex: 1.5;">
                 <input type="time" id="editDeadlineTime" style="flex: 1;">
             </div>
-            <span style="font-size: 0.8rem; color: #999;">填写后自动计算周期，与周期互相联动</span>
+            <span class="hint">填写后自动计算周期，与周期互相联动</span>
         </div>
         <div class="input-row">
             <div class="form-group" style="flex: 1;">
@@ -847,9 +991,9 @@ export default {
                 <input type="checkbox" id="editIncludeToday" style="width: 18px; height: 18px; cursor: pointer;">
                 <span>从起始时间开始</span>
             </label>
-            <span style="font-size: 0.8rem; color: #999;">默认从第二天0点开始计算周期，勾选后从起始/签到时刻起算</span>
+            <span class="hint">默认从第二天0点开始计算周期，勾选后从起始/签到时刻起算</span>
         </div>
-        <div style="display: flex; gap: 10px; margin-top: 10px;">
+        <div class="modal-actions">
             <button class="btn btn-primary" id="editSubmitBtn" onclick="saveEdit()">保存</button>
             <button class="btn modal-cancel" onclick="closeEditModal()">取消</button>
         </div>
@@ -863,12 +1007,32 @@ export default {
     var authToken = localStorage.getItem('authToken') || null;
     var selectedTasks = new Set();
     var isBatchChecking = false;
+    var pendingCheckins = new Set();
+    var serverOffset = 0;
+    var statsBuilt = false;
+
+    // ===== 通用工具 =====
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
 
     // ===== 主题切换 =====
     function applyTheme(theme) {
-        document.documentElement.classList.toggle('dark', theme === 'dark');
+        var isDark = theme === 'dark';
+        document.documentElement.classList.toggle('dark', isDark);
         var btn = document.getElementById('themeToggle');
-        if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+        if (btn) {
+            btn.textContent = isDark ? '☀️' : '🌙';
+            btn.title = isDark ? '切换浅色模式' : '切换深色模式';
+            btn.setAttribute('aria-label', btn.title);
+        }
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', isDark ? '#131417' : '#f0f2f5');
     }
 
     function toggleTheme() {
@@ -890,12 +1054,13 @@ export default {
         if (!wrap) return;
         var el = document.createElement('div');
         el.className = 'toast' + (type ? ' ' + type : '');
+        el.setAttribute('role', type === 'error' ? 'alert' : 'status');
         el.textContent = msg;
         wrap.appendChild(el);
         setTimeout(function() {
             el.classList.add('hide');
             setTimeout(function() { el.remove(); }, 300);
-        }, 3000);
+        }, 3200);
     }
 
     // ===== 样式化确认框 =====
@@ -905,19 +1070,35 @@ export default {
             overlay.className = 'modal-overlay visible';
             overlay.style.zIndex = '1500';
             var content = document.createElement('div');
-            content.className = 'modal-content';
-            content.style.width = '320px';
-            content.innerHTML = '<p style="margin: 0 0 18px; font-size: 0.95rem; line-height: 1.6;">' + msg + '</p>' +
-                '<div style="display: flex; gap: 10px;">' +
-                '<button class="btn btn-primary" id="cfmOk" style="background: var(--danger); height: 38px;">确定</button>' +
-                '<button class="btn modal-cancel" id="cfmCancel" style="height: 38px;">取消</button></div>';
+            content.className = 'modal-content confirm-modal';
+            content.innerHTML = '<h2>确认操作</h2>' +
+                '<p class="confirm-msg"></p>' +
+                '<div class="confirm-actions">' +
+                '<button class="btn btn-danger" data-confirm="ok">确定</button>' +
+                '<button class="btn modal-cancel" data-confirm="cancel">取消</button></div>';
+            content.querySelector('.confirm-msg').textContent = msg;
             overlay.appendChild(content);
             document.body.appendChild(overlay);
-            var done = function(val) { overlay.remove(); resolve(val); };
-            content.querySelector('#cfmOk').onclick = function() { done(true); };
-            content.querySelector('#cfmCancel').onclick = function() { done(false); };
+
+            var done = function(val) {
+                document.removeEventListener('keydown', onKey, true);
+                overlay.remove();
+                resolve(val);
+            };
+            var onKey = function(e) {
+                if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    done(false);
+                }
+            };
+            document.addEventListener('keydown', onKey, true);
+            content.addEventListener('click', function(e) {
+                var b = e.target.closest('[data-confirm]');
+                if (!b) return;
+                done(b.getAttribute('data-confirm') === 'ok');
+            });
             overlay.onclick = function(e) { if (e.target === overlay) done(false); };
-            content.querySelector('#cfmOk').focus();
+            content.querySelector('[data-confirm="ok"]').focus();
         });
     }
 
@@ -971,13 +1152,13 @@ export default {
             }
             var header = document.getElementById('addSectionHeader');
             header.classList.remove('locked');
-            header.style.cursor = 'pointer';
+            header.setAttribute('aria-disabled', 'false');
             document.getElementById('addTitle').textContent = '➕ 添加签到项';
             // 解锁邮件设置
             var emailHeader = document.getElementById('emailSectionHeader');
             if (emailHeader) {
                 emailHeader.classList.remove('locked');
-                emailHeader.style.cursor = 'pointer';
+                emailHeader.setAttribute('aria-disabled', 'false');
                 document.getElementById('emailTitle').textContent = '📧 邮件通知设置';
             }
         } else {
@@ -994,7 +1175,8 @@ export default {
             updateBatchBar();
             var header = document.getElementById('addSectionHeader');
             header.classList.add('locked');
-            header.style.cursor = 'not-allowed';
+            header.setAttribute('aria-disabled', 'true');
+            header.setAttribute('aria-expanded', 'false');
             document.getElementById('addTitle').textContent = '🔒 登录后可添加签到项';
             document.getElementById('addSectionBody').style.maxHeight = '0';
             document.getElementById('addSectionArrow').classList.remove('open');
@@ -1002,7 +1184,8 @@ export default {
             var emailHeader = document.getElementById('emailSectionHeader');
             if (emailHeader) {
                 emailHeader.classList.add('locked');
-                emailHeader.style.cursor = 'not-allowed';
+                emailHeader.setAttribute('aria-disabled', 'true');
+                emailHeader.setAttribute('aria-expanded', 'false');
                 document.getElementById('emailTitle').textContent = '🔒 登录后可配置邮件通知';
                 document.getElementById('emailSectionBody').style.maxHeight = '0';
                 document.getElementById('emailSectionArrow').classList.remove('open');
@@ -1043,6 +1226,23 @@ export default {
         });
     });
 
+    // 任务列表事件委托：不在 HTML 中拼内联 onclick，避免用户输入破坏脚本
+    document.getElementById('tasksList').addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        var action = btn.getAttribute('data-action');
+        var id = btn.getAttribute('data-id');
+        if (action === 'open') openUrl(btn.getAttribute('data-url') || '');
+        else if (action === 'checkin') doCheckIn(id);
+        else if (action === 'edit') openEditModal(id);
+        else if (action === 'copy') copyTask(id);
+        else if (action === 'delete') deleteTask(id);
+    });
+    document.getElementById('tasksList').addEventListener('change', function(e) {
+        var cb = e.target.closest('.task-checkbox');
+        if (cb) toggleTaskSelection(cb.getAttribute('data-id'));
+    });
+
     function showLogin() {
         showModal('loginModal', 'loginPassword');
         document.getElementById('loginPassword').value = '';
@@ -1057,6 +1257,8 @@ export default {
         var password = document.getElementById('loginPassword').value;
         if (!password) return;
         var errorEl = document.getElementById('loginError');
+        var btn = document.getElementById('loginSubmitBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '登录中...'; }
         try {
             var res = await fetch(BASE_URL + '/api/login', {
                 method: 'POST',
@@ -1070,6 +1272,7 @@ export default {
                 localStorage.setItem('authTokenExpiry', Date.now() + 8 * 60 * 60 * 1000);
                 closeLoginModal();
                 updateLoginUI();
+                showToast('登录成功', 'success');
             } else {
                 errorEl.textContent = data.error || '登录失败';
                 errorEl.style.display = 'block';
@@ -1077,6 +1280,8 @@ export default {
         } catch (e) {
             errorEl.textContent = '网络错误';
             errorEl.style.display = 'block';
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '登录'; }
         }
     }
 
@@ -1093,6 +1298,7 @@ export default {
         localStorage.removeItem('authToken');
         localStorage.removeItem('authTokenExpiry');
         updateLoginUI();
+        showToast('已退出登录');
     }
 
     function authFetch(url, options) {
@@ -1105,19 +1311,27 @@ export default {
     }
 
     function openUrl(url) {
-        var finalUrl = url.trim();
-        if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
-            finalUrl = 'http://' + finalUrl;
+        var raw = String(url || '').trim();
+        if (!raw) return;
+        if (!/^[a-z][a-z0-9+.-]*:/i.test(raw)) raw = 'http://' + raw;
+        try {
+            var parsed = new URL(raw);
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                showToast('仅支持 http/https 链接', 'error');
+                return;
+            }
+            window.open(parsed.href, '_blank', 'noopener,noreferrer');
+        } catch (e) {
+            showToast('签到网址无效', 'error');
         }
-        window.open(finalUrl, '_blank');
     }
 
     async function loadTasks() {
         try {
-            var res = await fetch(BASE_URL + '/api/tasks');
+            var res = await fetch(BASE_URL + '/api/tasks', { cache: 'no-store' });
             var data = await res.json();
             tasks = data.tasks || [];
-            if (data.serverTime) { serverOffset = data.serverTime - Date.now(); }
+            if (data.serverTime) serverOffset = data.serverTime - Date.now();
             updateFooterServerTime();
             renderTasks();
             startGlobalTimer();
@@ -1127,11 +1341,15 @@ export default {
     }
 
     function renderTasksFailed() {
+        var batchBar = document.getElementById('batchBar');
+        if (batchBar) batchBar.style.display = 'none';
         var container = document.getElementById('tasksList');
-        container.innerHTML = '<div style="text-align:center; padding: 40px; color:var(--danger); background:var(--card-bg); border-radius:12px; grid-column: 1 / -1;">⚠️ 加载失败，请检查网络</div>';
+        container.innerHTML = '<div class="task-error">⚠️ 加载失败，请检查网络</div>';
     }
 
     function renderSkeleton() {
+        var batchBar = document.getElementById('batchBar');
+        if (batchBar) batchBar.style.display = 'none';
         var container = document.getElementById('tasksList');
         var html = '';
         for (var i = 0; i < 4; i++) {
@@ -1184,85 +1402,110 @@ export default {
 
     function renderTasks() {
         var container = document.getElementById('tasksList');
+        var batchBar = document.getElementById('batchBar');
+        if (batchBar) batchBar.style.display = tasks.length > 0 ? 'flex' : 'none';
+
         if (tasks.length === 0) {
-            container.innerHTML = '<div style="text-align:center; padding: 50px 20px; color:var(--text-muted); background:var(--card-bg); border-radius:12px; grid-column: 1 / -1; box-shadow: var(--shadow);">' +
-                '<div style="font-size: 2.5rem; margin-bottom: 10px;">📋</div>' +
-                '<div style="font-size: 1rem;">暂无签到项</div>' +
-                '<div style="font-size: 0.85rem; margin-top: 6px;">登录后添加第一个签到任务吧</div></div>';
+            container.innerHTML = '<div class="task-empty">' +
+                '<div class="task-empty-icon">📋</div>' +
+                '<div class="task-empty-title">暂无签到项</div>' +
+                '<div class="task-empty-sub">登录后添加第一个签到任务吧</div></div>';
+            updateStats();
             return;
         }
 
         sortTasks();
 
+        // 清理已被删除任务残留的选中状态
+        var alive = {};
+        tasks.forEach(function(task) { alive[task.id] = true; });
+        Array.from(selectedTasks).forEach(function(id) {
+            if (!alive[id]) selectedTasks.delete(id);
+        });
+
         var todayStr = getTodayDateString();
-        container.innerHTML = '';
+        var html = '';
         tasks.forEach(function(task) {
             var isImportant = (task.importance === 'important');
             var checkedToday = (task.checkedDate === todayStr);
-            
-            var html = '<div class="task-item ' + (isImportant ? 'important' : '') + '" id="task-' + task.id + '">';
-            
-            html += '<div class="task-left" title="' + task.name + '">';
-            html += '<input type="checkbox" class="task-checkbox" onchange="toggleTaskSelection(\\'' + task.id + '\\')" ' + (selectedTasks.has(task.id) ? 'checked' : '') + '>';
-            if (isImportant) html += '<span class="important-badge">⭐</span>';
-            html += '<span>' + task.name + '</span>';
+            var id = escapeHtml(task.id);
+            var name = escapeHtml(task.name);
+            var selected = selectedTasks.has(task.id);
+
+            html += '<div class="task-item' + (isImportant ? ' important' : '') + (selected ? ' task-selected' : '') + '" id="task-' + id + '">';
+
+            html += '<div class="task-left" title="' + name + '">';
+            html += '<input type="checkbox" class="task-checkbox" data-id="' + id + '" aria-label="选择任务：' + name + '"' + (selected ? ' checked' : '') + '>';
+            if (isImportant) html += '<span class="important-badge" title="重要任务">⭐</span>';
+            html += '<span class="task-name">' + name + '</span>';
             if (checkedToday) html += '<span class="checked-badge">✓ 已签到</span>';
             html += '</div>';
 
-            html += '<div class="task-center"><div class="countdown-display" id="countdown-' + task.id + '">--:--:--</div></div>';
-            html += '<div class="task-right">';
-            
-            if (task.targetUrl && task.targetUrl.trim() !== '') {
-                html += '<button class="btn btn-action-primary" onclick="openUrl(\\'' + task.targetUrl + '\\')">去签到</button>';
+            html += '<div class="task-center"><div class="countdown-display" id="countdown-' + id + '">--:--:--</div></div>';
+            html += '<div class="task-actions">';
+
+            if (task.targetUrl && String(task.targetUrl).trim() !== '') {
+                html += '<button class="btn btn-action-primary" data-action="open" data-url="' + escapeHtml(task.targetUrl) + '">去签到</button>';
             }
-            
-            html += '<button class="btn btn-action-secondary" onclick="doCheckIn(\\'' + task.id + '\\')">我已签到</button>';
-            
+
+            html += '<button class="btn btn-action-secondary" data-action="checkin" data-id="' + id + '">我已签到</button>';
+            html += '</div>';
+
             if (authToken) {
-                html += '<div class="text-actions">';
-                html += '<button class="btn-text edit" onclick="openEditModal(\\'' + task.id + '\\')">编辑</button>';
-                html += '<button class="btn-text copy" onclick="copyTask(\\'' + task.id + '\\')">复制</button>';
-                html += '<button class="btn-text delete" onclick="deleteTask(\\'' + task.id + '\\')">删除</button>';
+                html += '<div class="text-actions task-text-actions">';
+                html += '<button class="btn-text edit" data-action="edit" data-id="' + id + '">编辑</button>';
+                html += '<button class="btn-text copy" data-action="copy" data-id="' + id + '">复制</button>';
+                html += '<button class="btn-text delete" data-action="delete" data-id="' + id + '">删除</button>';
                 html += '</div>';
             }
+            html += '<div class="task-progress-wrap"><div class="task-progress"><div class="task-progress-bar"><div class="task-progress-fill" id="progress-fill-' + id + '"></div></div><span class="task-progress-text" id="progress-text-' + id + '"></span></div></div>';
             html += '</div>';
-            html += '<div class="task-progress-wrap"><div class="task-progress" id="progress-' + task.id + '"><div class="task-progress-bar"><div class="task-progress-fill" id="progress-fill-' + task.id + '"></div></div><span class="task-progress-text" id="progress-text-' + task.id + '"></span></div></div>';
-            html += '</div>';
-            
-            container.insertAdjacentHTML('beforeend', html);
         });
+        container.innerHTML = html;
         updateCountdowns();
         updateStats();
     }
 
     function updateStats() {
-	        var now = Date.now();
-	        var todayStr = getTodayDateString();
-	        var total = tasks.length;
-	        var checkedToday = 0;
-	        var dueSoon = 0;
-	        var overdue = 0;
+        var now = Date.now();
+        var todayStr = getTodayDateString();
+        var total = tasks.length;
+        var checkedToday = 0;
+        var dueSoon = 0;
+        var overdue = 0;
 
-	        tasks.forEach(function(task) {
-	            if (task.checkedDate === todayStr) checkedToday++;
-	            var deadline = taskDeadline(task);
-	            var diff = deadline - now;
-	            if (diff <= 0) overdue++;
-	            else if (diff <= 86400000) dueSoon++;
-	        });
+        tasks.forEach(function(task) {
+            if (task.checkedDate === todayStr) checkedToday++;
+            var diff = taskDeadline(task) - now;
+            if (diff <= 0) overdue++;
+            else if (diff <= 86400000) dueSoon++;
+        });
 
-	        var grid = document.getElementById('statsGrid');
-	        if (!grid) return;
-	        grid.innerHTML =
-	            '<div class="stat-card"><div class="stat-label">📋 总任务</div><div class="stat-value stat-blue">' + total + '</div></div>' +
-	            '<div class="stat-card"><div class="stat-label">✅ 今日签到</div><div class="stat-value stat-green">' + checkedToday + '</div></div>' +
-	            '<div class="stat-card"><div class="stat-label">⏰ 即将到期</div><div class="stat-value stat-orange">' + dueSoon + '</div></div>' +
-	            '<div class="stat-card"><div class="stat-label">⚠️ 已逾期</div><div class="stat-value stat-red">' + overdue + '</div></div>';
-	    }
+        var grid = document.getElementById('statsGrid');
+        if (!grid) return;
+        // 只构建一次 DOM，之后只更新数字，避免每秒重排
+        if (!statsBuilt) {
+            grid.innerHTML =
+                '<div class="stat-card stat-blue"><div class="stat-icon" aria-hidden="true">📋</div><div class="stat-body"><div class="stat-label">总任务</div><div class="stat-value" id="statTotal">0</div></div></div>' +
+                '<div class="stat-card stat-green"><div class="stat-icon" aria-hidden="true">✅</div><div class="stat-body"><div class="stat-label">今日签到</div><div class="stat-value" id="statChecked">0</div></div></div>' +
+                '<div class="stat-card stat-orange"><div class="stat-icon" aria-hidden="true">⏰</div><div class="stat-body"><div class="stat-label">即将到期</div><div class="stat-value" id="statDueSoon">0</div></div></div>' +
+                '<div class="stat-card stat-red"><div class="stat-icon" aria-hidden="true">⚠️</div><div class="stat-body"><div class="stat-label">已逾期</div><div class="stat-value" id="statOverdue">0</div></div></div>';
+            statsBuilt = true;
+        }
+        setStatValue('statTotal', total);
+        setStatValue('statChecked', checkedToday);
+        setStatValue('statDueSoon', dueSoon);
+        setStatValue('statOverdue', overdue);
+    }
+
+    function setStatValue(id, value) {
+        var el = document.getElementById(id);
+        if (el && el.textContent !== String(value)) el.textContent = value;
+    }
 
 	    function updateCountdowns() {
-	        var now = Date.now();
-	        tasks.forEach(function(task) {
+        var now = Date.now();
+        tasks.forEach(function(task) {
             var deadline = taskDeadline(task);
             var diff = deadline - now;
             var timerEl = document.getElementById('countdown-' + task.id);
@@ -1289,12 +1532,12 @@ export default {
                     timerEl.classList.remove('fresh');
                     timerEl.classList.remove('due-soon');
                 }
-                
+
                 var days = Math.floor(diff / (1000 * 60 * 60 * 24));
                 var hrs = String(Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))).padStart(2, '0');
                 var mins = String(Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))).padStart(2, '0');
                 var secs = String(Math.floor((diff % (1000 * 60)) / 1000)).padStart(2, '0');
-                
+
                 var timeHtml = "";
                 if (days > 0) timeHtml += '<span class="days">' + days + '</span><span class="unit">天</span>';
                 timeHtml += hrs + '<span class="unit">时</span>' + mins + '<span class="unit">分</span>' + secs + '<span class="unit">秒</span>';
@@ -1305,7 +1548,7 @@ export default {
             var progEl = document.getElementById('progress-fill-' + task.id);
             var progTextEl = document.getElementById('progress-text-' + task.id);
             if (progEl && progTextEl) {
-                var totalMs = task.countdownHours * 60 * 60 * 1000;
+                var totalMs = Math.max(1, task.countdownHours * 60 * 60 * 1000);
                 var rawDiff = deadline - now; // 与倒计时同一口径
                 var pct = Math.max(0, Math.min(1, rawDiff / totalMs)) * 100;
                 progEl.style.width = Math.round(pct) + '%';
@@ -1322,14 +1565,13 @@ export default {
                     progEl.style.setProperty('--t', (pct / 100).toFixed(3));
                     var deadlineDate = new Date(deadline);
                     var pad = function(n) { return String(n).padStart(2, '0'); };
-                    var deadlineStr = pad(deadlineDate.getMonth() + 1) + '-' + pad(deadlineDate.getDate()) + ' ' + pad(deadlineDate.getHours()) + ':' + pad(deadlineDate.getMinutes());
+                    var yearPrefix = deadlineDate.getFullYear() === new Date().getFullYear() ? '' : deadlineDate.getFullYear() + '-';
+                    var deadlineStr = yearPrefix + pad(deadlineDate.getMonth() + 1) + '-' + pad(deadlineDate.getDate()) + ' ' + pad(deadlineDate.getHours()) + ':' + pad(deadlineDate.getMinutes());
                     progTextEl.textContent = '截止 ' + deadlineStr;
                 }
             }
         });
     }
-
-    var serverOffset = 0;
 
     function updateFooterServerTime() {
         var el = document.getElementById('footerBar');
@@ -1423,52 +1665,48 @@ export default {
         document.getElementById(unitElId).value = p.unit;
     }
 
-    (function() {
-        var header = document.getElementById('addSectionHeader');
-        var body = document.getElementById('addSectionBody');
-        var arrow = document.getElementById('addSectionArrow');
-        var isOpen = false;
-        
-        header.addEventListener('click', function() {
+    // 折叠面板：展开状态由 DOM 的 .open 决定，避免登出后状态错乱
+    function bindCollapse(headerId, bodyId, arrowId, onOpen) {
+        var header = document.getElementById(headerId);
+        var body = document.getElementById(bodyId);
+        var arrow = document.getElementById(arrowId);
+        function setOpen(open) {
+            body.style.maxHeight = open ? body.scrollHeight + 'px' : '0';
+            arrow.classList.toggle('open', open);
+            header.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+        function toggle() {
             if (!authToken) {
                 showToast('请先登录管理员账号', 'error');
                 return;
             }
-            isOpen = !isOpen;
-            if (isOpen) {
-                body.style.maxHeight = body.scrollHeight + 'px';
-                arrow.classList.add('open');
+            var willOpen = !arrow.classList.contains('open');
+            if (willOpen && onOpen) {
+                Promise.resolve(onOpen()).then(function() { setOpen(true); }, function() { setOpen(true); });
             } else {
-                body.style.maxHeight = '0';
-                arrow.classList.remove('open');
+                setOpen(willOpen);
+            }
+        }
+        header.addEventListener('click', toggle);
+        header.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggle();
             }
         });
-    })();
+    }
 
-    (function() {
-        var header = document.getElementById('emailSectionHeader');
+    // 触发时间行增减后重新计算折叠面板高度，避免内容被裁切
+    function refreshEmailBodyHeight() {
         var body = document.getElementById('emailSectionBody');
         var arrow = document.getElementById('emailSectionArrow');
-        var isOpen = false;
+        if (body && arrow && arrow.classList.contains('open')) {
+            body.style.maxHeight = body.scrollHeight + 'px';
+        }
+    }
 
-        header.addEventListener('click', function() {
-            if (!authToken) {
-                showToast('请先登录管理员账号', 'error');
-                return;
-            }
-            isOpen = !isOpen;
-            if (isOpen) {
-                arrow.classList.add('open');
-                (async () => {
-                    await loadEmailSettings();
-                    body.style.maxHeight = body.scrollHeight + 'px';
-                })();
-            } else {
-                body.style.maxHeight = '0';
-                arrow.classList.remove('open');
-            }
-        });
-    })();
+    bindCollapse('addSectionHeader', 'addSectionBody', 'addSectionArrow');
+    bindCollapse('emailSectionHeader', 'emailSectionBody', 'emailSectionArrow', loadEmailSettings);
 
     // 添加表单联动：改周期 → 重算截止；改截止 → 反推周期
     (function() {
@@ -1555,34 +1793,45 @@ export default {
         else if (countdownHours % 24 === 0) unit = 'days';
         else unit = 'hours';
 
-        var res = await authFetch(BASE_URL + '/api/add', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: name, targetUrl: targetUrl, countdownHours: countdownHours,
-                priority: priority, importance: importance,
-                unit: unit,
-                lastCheckIn: lastCheckIn,
-                cycleBase: cycleBaseMs(lastCheckIn, includeToday, countdownHours),
-                includeToday: includeToday
-            })
-        });
-        if (res.ok) {
-            document.getElementById('addName').value = '';
-            document.getElementById('addUrl').value = '';
-            document.getElementById('addPriority').value = '0';
-            document.getElementById('addImportance').value = 'normal';
-            document.getElementById('addIncludeToday').checked = false;
-            document.getElementById('addStartDate').value = '';
-            document.getElementById('addStartTime').value = '';
-            document.getElementById('addTimeValue').value = '1';
-            document.getElementById('addTimeUnit').value = '24';
-            document.getElementById('addDeadlineDate').value = '';
-            document.getElementById('addDeadlineTime').value = '';
-            loadTasks();
-        } else if (res.status === 401) {
-            showToast('登录已过期，请重新登录', 'error');
-            doLogout();
+        var addBtn = document.getElementById('addSubmitBtn');
+        if (addBtn) { addBtn.disabled = true; addBtn.textContent = '添加中...'; }
+        try {
+            var res = await authFetch(BASE_URL + '/api/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: name, targetUrl: targetUrl, countdownHours: countdownHours,
+                    priority: priority, importance: importance,
+                    unit: unit,
+                    lastCheckIn: lastCheckIn,
+                    cycleBase: cycleBaseMs(lastCheckIn, includeToday, countdownHours),
+                    includeToday: includeToday
+                })
+            });
+            if (res.ok) {
+                document.getElementById('addName').value = '';
+                document.getElementById('addUrl').value = '';
+                document.getElementById('addPriority').value = '0';
+                document.getElementById('addImportance').value = 'normal';
+                document.getElementById('addIncludeToday').checked = false;
+                document.getElementById('addStartDate').value = '';
+                document.getElementById('addStartTime').value = '';
+                document.getElementById('addTimeValue').value = '1';
+                document.getElementById('addTimeUnit').value = '24';
+                document.getElementById('addDeadlineDate').value = '';
+                document.getElementById('addDeadlineTime').value = '';
+                showToast('已添加「' + name + '」', 'success');
+                loadTasks();
+            } else if (res.status === 401) {
+                showToast('登录已过期，请重新登录', 'error');
+                doLogout();
+            } else {
+                showToast('添加失败，请稍后重试', 'error');
+            }
+        } catch (e) {
+            showToast('网络错误，添加失败', 'error');
+        } finally {
+            if (addBtn) { addBtn.disabled = false; addBtn.textContent = '添加'; }
         }
     }
 
@@ -1596,22 +1845,31 @@ export default {
     }
 
     async function sendCheckIn(id, lastCheckIn, cycleBase) {
-        var res = await fetch(BASE_URL + '/api/checkin', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                id: id,
-                lastCheckIn: lastCheckIn,
-                cycleBase: cycleBase,
-                checkedDate: getTodayDateString()
-            })
-        });
-        
-        if (res.ok) {
-            fireConfetti(60);
-            setTimeout(loadTasks, 300);
-        } else {
-            showToast('签到失败，请稍后重试', 'error');
+        if (pendingCheckins.has(id)) return;
+        pendingCheckins.add(id);
+        try {
+            var res = await fetch(BASE_URL + '/api/checkin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: id,
+                    lastCheckIn: lastCheckIn,
+                    cycleBase: cycleBase,
+                    checkedDate: getTodayDateString()
+                })
+            });
+
+            if (res.ok) {
+                fireConfetti(60);
+                showToast('签到成功，倒计时已重置', 'success');
+                setTimeout(loadTasks, 300);
+            } else {
+                showToast('签到失败，请稍后重试', 'error');
+            }
+        } catch (e) {
+            showToast('网络错误，签到失败', 'error');
+        } finally {
+            pendingCheckins.delete(id);
         }
     }
 
@@ -1699,6 +1957,8 @@ export default {
 
         if (fail > 0) {
             showToast('批量删除完成：成功 ' + success + ' 项，失败 ' + fail + ' 项', 'error');
+        } else if (success > 0) {
+            showToast('已删除 ' + success + ' 项', 'success');
         }
     }
 
@@ -1746,6 +2006,8 @@ export default {
 
         if (fail > 0) {
             showToast('批量签到完成：成功 ' + success + ' 项，失败 ' + fail + ' 项', 'error');
+        } else if (success > 0) {
+            showToast('已签到 ' + success + ' 项', 'success');
         }
     }
 
@@ -1755,12 +2017,19 @@ export default {
             return;
         }
         if (!(await confirmBox('确定删除该项吗？'))) return;
-        var res = await authFetch(BASE_URL + '/api/delete?id=' + id, { method: 'POST' });
-        if (res.ok) {
-            loadTasks();
-        } else if (res.status === 401) {
-            showToast('登录已过期，请重新登录', 'error');
-            doLogout();
+        try {
+            var res = await authFetch(BASE_URL + '/api/delete?id=' + encodeURIComponent(id), { method: 'POST' });
+            if (res.ok) {
+                showToast('已删除', 'success');
+                loadTasks();
+            } else if (res.status === 401) {
+                showToast('登录已过期，请重新登录', 'error');
+                doLogout();
+            } else {
+                showToast('删除失败，请稍后重试', 'error');
+            }
+        } catch (e) {
+            showToast('网络错误，删除失败', 'error');
         }
     }
 
@@ -1772,32 +2041,40 @@ export default {
         var task = tasks.find(function(t) { return t.id === id; });
         if (!task) return;
 
-        var res = await authFetch(BASE_URL + '/api/add', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: task.name + ' - 副本',
-                targetUrl: task.targetUrl || '',
-                countdownHours: task.countdownHours,
-                priority: task.priority || 0,
-                importance: task.importance || 'normal',
-                unit: task.unit || 'hours',
-                lastCheckIn: task.lastCheckIn,
-                cycleBase: typeof task.cycleBase === 'number' ? task.cycleBase : task.lastCheckIn,
-                includeToday: task.includeToday || false
-            })
-        });
-        if (res.ok) {
-            loadTasks();
-        } else if (res.status === 401) {
-            showToast('登录已过期，请重新登录', 'error');
-            doLogout();
+        try {
+            var res = await authFetch(BASE_URL + '/api/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: task.name + ' - 副本',
+                    targetUrl: task.targetUrl || '',
+                    countdownHours: task.countdownHours,
+                    priority: task.priority || 0,
+                    importance: task.importance || 'normal',
+                    unit: task.unit || 'hours',
+                    lastCheckIn: task.lastCheckIn,
+                    cycleBase: typeof task.cycleBase === 'number' ? task.cycleBase : task.lastCheckIn,
+                    includeToday: task.includeToday || false
+                })
+            });
+            if (res.ok) {
+                showToast('已复制任务', 'success');
+                loadTasks();
+            } else if (res.status === 401) {
+                showToast('登录已过期，请重新登录', 'error');
+                doLogout();
+            } else {
+                showToast('复制失败，请稍后重试', 'error');
+            }
+        } catch (e) {
+            showToast('网络错误，复制失败', 'error');
         }
     }
 
-    function openEditModal(id) {        if (!authToken) return;
+    function openEditModal(id) {
+        if (!authToken) return;
         var task = tasks.find(function(t) { return t.id === id; });
-        if(!task) return;
+        if (!task) return;
         
         document.getElementById('editId').value = task.id;
         document.getElementById('editName').value = task.name;
@@ -1913,18 +2190,25 @@ export default {
             editData.checkedDate = null;
         }
 
-        var res = await authFetch(BASE_URL + '/api/edit', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(editData)
-        });
-        
-        if (res.ok) {
-            closeEditModal();
-            loadTasks();
-        } else if (res.status === 401) {
-            showToast('登录已过期，请重新登录', 'error');
-            doLogout();
+        try {
+            var res = await authFetch(BASE_URL + '/api/edit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(editData)
+            });
+
+            if (res.ok) {
+                closeEditModal();
+                showToast('已保存修改', 'success');
+                loadTasks();
+            } else if (res.status === 401) {
+                showToast('登录已过期，请重新登录', 'error');
+                doLogout();
+            } else {
+                showToast('保存失败，请稍后重试', 'error');
+            }
+        } catch (e) {
+            showToast('网络错误，保存失败', 'error');
         }
     }
 
@@ -1937,14 +2221,16 @@ export default {
         var div = document.createElement('div');
         div.className = 'trigger-row';
         div.id = 'trigger-row-' + emailTriggerCount;
-        div.innerHTML = '<input type="number" id="trigger-input-' + emailTriggerCount + '" value="' + (value || '') + '" min="1" placeholder="例如：24（小时）" style="flex:1;">' +
-            '<span style="font-size:0.85rem;color:#666;min-width:40px;">小时</span>' +
-            '<button class="btn-remove" onclick="removeTriggerRow(this)">✕</button>';
+        div.innerHTML = '<input type="number" id="trigger-input-' + emailTriggerCount + '" value="' + escapeHtml(value == null ? '' : value) + '" min="1" placeholder="例如：24（小时）" aria-label="触发时间（小时）">' +
+            '<span class="unit-label">小时</span>' +
+            '<button class="btn-remove" type="button" onclick="removeTriggerRow(this)" aria-label="删除该触发时间">✕</button>';
         container.appendChild(div);
+        refreshEmailBodyHeight();
     }
 
     function removeTriggerRow(btn) {
         btn.parentElement.remove();
+        refreshEmailBodyHeight();
     }
 
     function getTriggersFromUI() {
@@ -1966,6 +2252,14 @@ export default {
         } else {
             addTriggerRow(24);
         }
+        refreshEmailBodyHeight();
+    }
+
+    function setEmailStatus(text, type) {
+        var el = document.getElementById('emailStatus');
+        if (!el) return;
+        el.textContent = text;
+        el.className = 'email-status' + (type ? ' ' + type : '');
     }
 
     async function loadEmailSettings() {
@@ -1982,8 +2276,8 @@ export default {
             for (var i = 0; i < modeRadios.length; i++) {
                 if (modeRadios[i].value === s.sendMode) modeRadios[i].checked = true;
             }
-            document.getElementById('emailStatus').textContent = '';
-            document.getElementById('emailStatus').className = 'email-status';
+            setEmailStatus('');
+            refreshEmailBodyHeight();
         } catch (e) {
             console.error('加载邮件设置失败', e);
         }
@@ -1994,51 +2288,56 @@ export default {
         var recipientsStr = document.getElementById('emailRecipients').value.trim();
         var recipients = recipientsStr.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
         if (recipients.length === 0) {
-            document.getElementById('emailStatus').textContent = '⚠️ 请至少填写一个接收邮箱';
-            document.getElementById('emailStatus').className = 'email-status error';
+            setEmailStatus('⚠️ 请至少填写一个接收邮箱', 'error');
             return;
         }
         var triggers = getTriggersFromUI();
         if (triggers.length === 0) {
-            document.getElementById('emailStatus').textContent = '⚠️ 请至少添加一个触发时间';
-            document.getElementById('emailStatus').className = 'email-status error';
+            setEmailStatus('⚠️ 请至少添加一个触发时间', 'error');
             return;
         }
         var sendMode = document.querySelector('input[name="sendMode"]:checked').value;
         var fromEmail = document.getElementById('emailFrom').value.trim() || 'onboarding@resend.dev';
 
-        var res = await authFetch(BASE_URL + '/api/email-settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ recipients: recipients, triggers: triggers, sendMode: sendMode, fromEmail: fromEmail })
-        });
-        var data = await res.json();
-        if (data.success) {
-            document.getElementById('emailStatus').textContent = '✅ 设置已保存';
-            document.getElementById('emailStatus').className = 'email-status success';
-        } else {
-            document.getElementById('emailStatus').textContent = '⚠️ 保存失败';
-            document.getElementById('emailStatus').className = 'email-status error';
+        var btn = document.getElementById('emailSaveBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+        try {
+            var res = await authFetch(BASE_URL + '/api/email-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ recipients: recipients, triggers: triggers, sendMode: sendMode, fromEmail: fromEmail })
+            });
+            var data = await res.json();
+            if (data.success) {
+                setEmailStatus('✅ 设置已保存', 'success');
+                showToast('邮件设置已保存', 'success');
+            } else {
+                setEmailStatus('⚠️ 保存失败', 'error');
+            }
+        } catch (e) {
+            setEmailStatus('⚠️ 网络错误，保存失败', 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '保存设置'; }
         }
     }
 
     async function testEmail() {
         if (!authToken) { showToast('请先登录', 'error'); return; }
-        document.getElementById('emailStatus').textContent = '⏳ 正在发送测试邮件...';
-        document.getElementById('emailStatus').className = 'email-status';
+        setEmailStatus('⏳ 正在发送测试邮件...');
+        var btn = document.getElementById('emailTestBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '发送中...'; }
         try {
             var res = await authFetch(BASE_URL + '/api/test-email', { method: 'POST' });
             var data = await res.json();
             if (data.success) {
-                document.getElementById('emailStatus').textContent = '✅ 测试邮件发送成功，请检查收件箱';
-                document.getElementById('emailStatus').className = 'email-status success';
+                setEmailStatus('✅ 测试邮件发送成功，请检查收件箱', 'success');
             } else {
-                document.getElementById('emailStatus').textContent = '⚠️ 发送失败，请检查 Resend API 配置';
-                document.getElementById('emailStatus').className = 'email-status error';
+                setEmailStatus('⚠️ 发送失败，请检查 Resend API 配置', 'error');
             }
         } catch (e) {
-            document.getElementById('emailStatus').textContent = '⚠️ 网络错误';
-            document.getElementById('emailStatus').className = 'email-status error';
+            setEmailStatus('⚠️ 网络错误', 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '测试邮件'; }
         }
     }
 
@@ -2046,12 +2345,19 @@ export default {
         renderSkeleton();
         await verifyToken();
         updateLoginUI();
-        loadTasks();
     })();
 </script>
 </body>
 </html>`;
-      return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+      return new Response(html, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer'
+        }
+      });
     }
 
     return new Response("Not Found", { status: 404 });
